@@ -33,6 +33,8 @@ export SLACK_BOT_TOKEN=xoxb-… SLACK_APP_TOKEN=xapp-… PAC_SLACK_OWNER=U…
 node bin/main.ts slack
 ```
 
+Tokens: put `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `PAC_SLACK_OWNER` in `$PAC_HOME/interfaces/slack/.env` (mode 600); `node bin/main.ts slack` reads it and it wins over exported shell variables.
+
 Logs are one JSON line per event (`slack_started`, `synced` with counts,
 `sync_failed` / `watch_exited` with a code).
 

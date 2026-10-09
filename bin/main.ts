@@ -1,6 +1,8 @@
 #!/usr/bin/env node
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseEnv } from "node:util";
 import { codeOf, Pac, pacArgv, pacHome } from "../pac/cli.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -42,6 +44,12 @@ async function main(argv: string[]): Promise<number> {
       return -1;
     }
     case "slack": {
+      // Tokens live in $PAC_HOME/interfaces/slack/.env (0600). The file wins over
+      // the shell, so a stale exported token can't shadow a rotated one.
+      const file = join(pacHome(), "interfaces", "slack", ".env");
+      if (existsSync(file)) {
+        process.env = { ...process.env, ...parseEnv(readFileSync(file, "utf8")) };
+      }
       const { startSlack } = await import("../slack/app.ts");
       await startSlack();
       return -1;

@@ -1,7 +1,7 @@
 import { McpServer, type CallToolResult } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { codeOf, NAME, stripFrontMatter, type Pac } from "../pac/cli.ts";
-import { isApproval, isRequest } from "../pac/types.ts";
+import { isApproval, isRequest, txIdOf } from "../pac/types.ts";
 
 /**
  * PAC as MCP tools over the pac CLI, for hosts that run a local stdio server
@@ -75,7 +75,7 @@ export function createPacServer(options: { pac: () => Pac; version: string }): M
       if (sent.receipt?.status === "rejected") {
         return failed(sent.receipt.error ?? "rejected");
       }
-      return said("Sent to PAC. Answers arrive once everyone involved approves what of theirs it carries; pac_threads shows progress.", { tx: sent.tx, msg: sent.msg });
+      return said("Sent to PAC. Answers arrive once everyone involved approves what of theirs it carries; pac_threads shows progress.", { tx: txIdOf(sent), msg: sent.msg });
     }),
   );
 

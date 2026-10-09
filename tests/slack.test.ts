@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { command, HELP } from "../slack/app.ts";
+import { command, HELP, isQuestion, transcript } from "../slack/app.ts";
 import { answerRequest, decide } from "../slack/decide.ts";
 import { approvalBlocks, contextOf, esc, reviewHash, type Block } from "../slack/render.ts";
 import { syncOnce, type SyncState } from "../slack/sync.ts";
@@ -119,6 +119,24 @@ describe("owner commands", () => {
     expect(await command(f.pac, "status", noop)).toContain("grant: `granted`");
     expect(await command(f.pac, "ask What does rent cost?", noop)).toContain("tx_new");
     expect((await f.calls()).at(-1)).toEqual(["goal", "What does rent cost?", "--wait"]);
+  });
+
+  it("shows the tx id when 0.5 prints the tx as an object", async () => {
+    const f = await fakePac({ goal: { msg: "m_1", receipt: { status: "accepted" }, tx: { id: "tx_obj", state: "running" } } });
+    close = f.close;
+    const reply = await command(f.pac, "What does rent cost?", async () => {});
+    expect(reply).toContain("`tx_obj`");
+    expect(reply).not.toContain("[object Object]");
+  });
+
+  it("keeps the owner's own question, escaped, in the DM record", () => {
+    expect(isQuestion("status")).toBe(false);
+    expect(isQuestion(" asks ")).toBe(false);
+    expect(isQuestion("What do teams use instead of syncs?")).toBe(true);
+    const all = JSON.stringify(transcript("ask What about <!channel>?", "Sent"));
+    expect(all).toContain("You asked PAC");
+    expect(all).toContain("What about &lt;!channel&gt;?");
+    expect(all).not.toContain("ask What");
   });
 
   it("escapes PAC's words in status", async () => {

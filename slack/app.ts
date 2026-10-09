@@ -1,7 +1,7 @@
 import bolt from "@slack/bolt";
 import { join } from "node:path";
 import { codeOf, Pac, pacHome } from "../pac/cli.ts";
-import { isApproval, type Env } from "../pac/types.ts";
+import { isApproval, txIdOf, type Env } from "../pac/types.ts";
 import { answerRequest, decide, type Outcome } from "./decide.ts";
 import { ACTION, VIEW, approvalBlocks, contextOf, esc, parseValue, resolved, textModal, type Block } from "./render.ts";
 import { loadState, saveState, syncOnce, type SyncState } from "./sync.ts";
@@ -44,6 +44,24 @@ export function slackConfig(env: Env = process.env): SlackConfig {
 
 const log = (event: string, extra: Record<string, unknown> = {}) => console.error(JSON.stringify({ at: new Date().toISOString(), event, ...extra }));
 
+/** Whether a `/pac` line is a question for PAC (not status / asks / help). */
+export function isQuestion(text: string): boolean {
+  const word = text.trim().toLowerCase();
+  return word !== "" && !["help", "status", "asks"].includes(word);
+}
+
+/** The owner's own `/pac` question and PAC's reply, kept in our DM. */
+export function transcript(question: string, reply: string): Block[] {
+  const q = esc(question.trim().replace(/^ask\s+/i, ""))
+    .split("\n")
+    .map((line) => `> ${line}`)
+    .join("\n");
+  return [
+    { type: "section", text: { type: "mrkdwn", text: `*You asked PAC:*\n${q}`.slice(0, 2900) } },
+    { type: "context", elements: [{ type: "mrkdwn", text: reply.slice(0, 2900) }] },
+  ];
+}
+
 /** A typed line from the owner: what to do and what to say back. */
 export async function command(pac: Pac, text: string, resync: () => Promise<void>): Promise<string> {
   const t = text.trim();
@@ -64,7 +82,8 @@ export async function command(pac: Pac, text: string, resync: () => Promise<void
   if (sent.receipt?.status === "rejected") {
     return `PAC refused it: \`${sent.receipt.error ?? "rejected"}\``;
   }
-  return `:mag: Sent to PAC${sent.tx ? ` (\`${sent.tx}\`)` : ""}. The answer comes here once everyone involved approves what of theirs it carries.`;
+  const tx = txIdOf(sent);
+  return `:mag: Sent to PAC${tx ? ` (\`${esc(tx)}\`)` : ""}. The answer comes here once everyone involved approves what of theirs it carries.`;
 }
 
 export async function startSlack(env: Env = process.env): Promise<void> {
@@ -75,7 +94,7 @@ export async function startSlack(env: Env = process.env): Promise<void> {
   const notOwner = "This PAC bot is linked to one person's PAC, and it isn't you.";
 
   let dm: string | undefined;
-  const post = async (message: { text: string; blocks: Block[] }) => {
+  const dmId = async (): Promise<string> => {
     if (!dm) {
       const opened = await app.client.conversations.open({ users: config.owner });
       dm = opened.channel?.id;
@@ -83,7 +102,10 @@ export async function startSlack(env: Env = process.env): Promise<void> {
         throw new Error("no_dm");
       }
     }
-    await app.client.chat.postMessage({ channel: dm, text: message.text, blocks: message.blocks as never });
+    return dm;
+  };
+  const post = async (message: { text: string; blocks: Block[] }) => {
+    await app.client.chat.postMessage({ channel: await dmId(), text: message.text, blocks: message.blocks as never });
   };
 
   // --- Sync: one pass at a time, triggered by `pac watch` and a slow poll ----
@@ -125,10 +147,22 @@ export async function startSlack(env: Env = process.env): Promise<void> {
       await respond({ response_type: "ephemeral", text: notOwner });
       return;
     }
+    let reply: string;
     try {
-      await respond({ response_type: "ephemeral", text: await command(pac, c.text, resync) });
+      reply = await command(pac, c.text, resync);
     } catch (error) {
-      await respond({ response_type: "ephemeral", text: `PAC: \`${codeOf(error)}\`` });
+      reply = `PAC: \`${codeOf(error)}\``;
+    }
+    const inDm = c.channel_id === (await dmId().catch(() => undefined));
+    if (inDm) {
+      // In our DM, a normal (in_channel) reply: Slack then keeps the owner's `/pac …` line too.
+      await respond({ response_type: "in_channel", text: reply });
+      return;
+    }
+    // Elsewhere nobody else may see PAC's words: a private note here, the record in our DM.
+    await respond({ response_type: "ephemeral", text: reply });
+    if (isQuestion(c.text)) {
+      await post({ text: `You asked PAC: ${c.text}`, blocks: transcript(c.text, reply) }).catch((error) => log("dm_failed", { code: codeOf(error) }));
     }
   });
 

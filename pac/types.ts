@@ -89,8 +89,12 @@ export interface Status {
 export interface Sent {
   msg?: string;
   receipt?: { status: "accepted" | "rejected"; error?: string };
-  tx?: string;
+  /** 0.5 prints the tx itself (`{id, …}`); older notes show a bare id. */
+  tx?: string | { id?: string };
 }
+
+/** The tx id a `goal` started, whichever shape the CLI printed. */
+export const txIdOf = (sent: Sent): string | undefined => (typeof sent.tx === "string" ? sent.tx : typeof sent.tx?.id === "string" ? sent.tx.id : undefined);
 
 export interface WatchEvent {
   event: string;

@@ -23,7 +23,14 @@ async function main(argv: string[]): Promise<number> {
         console.log(JSON.stringify({ ok: true, home: pacHome(), pac: pacArgv().join(" "), version: s.version, user: s.identity?.name, grant: s.grant?.state ?? "none", asks: s.asks, problems }, null, 2));
         return 0;
       } catch (error) {
-        console.log(JSON.stringify({ ok: false, home: pacHome(), pac: pacArgv().join(" "), code: codeOf(error) }, null, 2));
+        const code = codeOf(error);
+        const hint =
+          code === "no_pac"
+            ? `No pac CLI at ${join(pacHome(), "bin", "pac")} or on PATH. Set PAC_BIN to the CLI this home uses, e.g. PAC_BIN=~/.pac/bin/pac`
+            : code === "not_set_up"
+              ? "This PAC_HOME has no keys or joined no deployment."
+              : undefined;
+        console.log(JSON.stringify({ ok: false, home: pacHome(), pac: pacArgv().join(" "), code, ...(hint ? { hint } : {}) }, null, 2));
         return 1;
       }
     }

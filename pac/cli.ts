@@ -130,8 +130,29 @@ export class Pac {
     return this.run(["files", "cat", file]);
   }
 
-  goal(text: string): Promise<Sent> {
-    return this.run(["goal", text, "--wait"]);
+  goal(text: string, options: { with?: string[] } = {}): Promise<Sent> {
+    return this.run(["goal", text, ...(options.with ?? []).flatMap((w) => ["--with", w]), "--wait"]);
+  }
+
+  /** The next turn of a thread the user is in, to everyone in it. */
+  reply(tx: string, text: string): Promise<Sent> {
+    return this.run(["goal", text, "--reply-to", tx, "--wait"]);
+  }
+
+  abort(tx: string): Promise<unknown> {
+    return this.run(["abort", tx]);
+  }
+
+  contacts(): Promise<{ user: string; name: string }[]> {
+    return this.run(["contacts"]);
+  }
+
+  verify(): Promise<{ checked?: number; problems?: unknown[] }> {
+    return this.run(["verify"]);
+  }
+
+  trust(): Promise<{ status?: string; deployment?: { name?: string; pac?: string; current?: string[]; retired?: string[] } }> {
+    return this.run(["trust"]);
   }
 
   answer(ask: string, text: string): Promise<unknown> {

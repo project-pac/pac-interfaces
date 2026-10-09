@@ -4,7 +4,11 @@ One Slack bot for **one PAC home** and **one Slack user** (its owner). It runs
 on the owner's machine in Socket Mode: no public URL, keys never leave the home.
 
 - `/pac <question>` or a DM: asks PAC (`pac goal … --wait`).
-- `/pac status`, `/pac asks` (re-post open cards), `/pac help`.
+- `/pac with Dhrumil,me <question>`: ask the people you name (`/pac contacts`).
+- `/pac threads`, `/pac show <tx>`, `/pac reply <tx> <text>`; or reply in an answer card's Slack thread to ask a follow-up. Answer cards have Reply and Abort buttons (Abort asks Slack-side confirmation first; `/pac abort` only shows that button).
+- `/pac files`, `/pac file <name|id>`, `/pac remember <name.md>` (opens a form, or put the text on the next lines).
+- `/pac status`, `/pac verify`, `/pac trust`, `/pac contacts`, `/pac asks` (re-post open cards), `/pac help`.
+- Not here, by design: keys, grants, upgrades, deleting files, `pac decide` outside a card click. Use the terminal.
 - PAC's questions → card with **Answer** (modal) / **Skip**.
 - Approvals → card with every passage of yours, per recipient, then
   **Yes, share** / **Ask for a change** (modal) / **No**. The click is checked

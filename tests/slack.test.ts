@@ -8,7 +8,7 @@ import { approval, fakePac, QUOTE, request, tx } from "./scene.ts";
 let close: (() => Promise<void>) | undefined;
 afterEach(async () => close?.());
 
-const fresh = (): SyncState => ({ asks: {}, answers: {}, primed: false });
+const fresh = (): SyncState => ({ asks: {}, answers: {}, threads: {}, primed: false });
 const recorder = () => {
   const posts: { text: string; blocks: Block[] }[] = [];
   return { posts, post: async (m: { text: string; blocks: Block[] }) => void posts.push(m) };
@@ -115,16 +115,16 @@ describe("owner commands", () => {
     const f = await fakePac();
     close = f.close;
     const noop = async () => {};
-    expect(await command(f.pac, "", noop)).toBe(HELP);
-    expect(await command(f.pac, "status", noop)).toContain("grant: `granted`");
-    expect(await command(f.pac, "ask What does rent cost?", noop)).toContain("tx_new");
+    expect((await command(f.pac, "", noop)).text).toBe(HELP);
+    expect((await command(f.pac, "status", noop)).text).toContain("grant: `granted`");
+    expect((await command(f.pac, "ask What does rent cost?", noop)).text).toContain("tx_new");
     expect((await f.calls()).at(-1)).toEqual(["goal", "What does rent cost?", "--wait"]);
   });
 
   it("shows the tx id when 0.5 prints the tx as an object", async () => {
     const f = await fakePac({ goal: { msg: "m_1", receipt: { status: "accepted" }, tx: { id: "tx_obj", state: "running" } } });
     close = f.close;
-    const reply = await command(f.pac, "What does rent cost?", async () => {});
+    const reply = (await command(f.pac, "What does rent cost?", async () => {})).text;
     expect(reply).toContain("`tx_obj`");
     expect(reply).not.toContain("[object Object]");
   });
@@ -142,8 +142,63 @@ describe("owner commands", () => {
   it("escapes PAC's words in status", async () => {
     const f = await fakePac({ status: { version: "0.5.0", identity: { user: "u", name: "<!channel>" }, grant: { state: "granted" } } });
     close = f.close;
-    expect(await command(f.pac, "status", async () => {})).not.toContain("<!channel>");
+    expect((await command(f.pac, "status", async () => {})).text).not.toContain("<!channel>");
   });
 });
 
 void QUOTE;
+
+describe("more pac features", () => {
+  const noop = async () => {};
+  it("asks the people named, with --with per name", async () => {
+    const f = await fakePac();
+    close = f.close;
+    await command(f.pac, "with Dhrumil,me What do you use instead of syncs?", noop);
+    expect((await f.calls()).at(-1)).toEqual(["goal", "What do you use instead of syncs?", "--with", "Dhrumil", "--with", "me", "--wait"]);
+  });
+
+  it("replies in a thread with --reply-to, and refuses a bad tx id", async () => {
+    const f = await fakePac();
+    close = f.close;
+    await command(f.pac, "reply tx_1 and for 2 bedrooms?", noop);
+    expect((await f.calls()).at(-1)).toEqual(["goal", "and for 2 bedrooms?", "--reply-to", "tx_1", "--wait"]);
+    const n = (await f.calls()).length;
+    await command(f.pac, "reply nope hi", noop);
+    expect((await f.calls()).length).toBe(n);
+  });
+
+  it("never aborts from a typed command: it shows a confirm button", async () => {
+    const f = await fakePac();
+    close = f.close;
+    const r = await command(f.pac, "abort tx_1", noop);
+    expect(JSON.stringify(r.blocks)).toContain("pac_abort");
+    expect(JSON.stringify(r.blocks)).toContain("confirm");
+    expect((await f.calls()).some((c) => c[0] === "abort")).toBe(false);
+  });
+
+  it("opens a form for remember without text, saves with text", async () => {
+    const f = await fakePac();
+    close = f.close;
+    expect((await command(f.pac, "remember travel.md", noop)).modal).toBeTruthy();
+    await command(f.pac, "remember travel.md\nI prefer window seats.", noop);
+    expect((await f.calls()).at(-1)?.slice(0, 2)).toEqual(["files", "put"]);
+    expect((await command(f.pac, "remember ../keys", noop)).text).toContain("remember");
+  });
+
+  it("lists threads, files, contacts without leaking markup", async () => {
+    const f = await fakePac({ txs: [tx("tx_1", { resultFile: "f_r" })], files: [{ file: "f_1", name: "<!here>.md", version: 1, writtenAt: "2026-10-09T00:00:00Z" }] });
+    close = f.close;
+    expect(JSON.stringify((await command(f.pac, "threads", noop)).blocks)).toContain("answer released");
+    expect(JSON.stringify((await command(f.pac, "files", noop)).blocks)).not.toContain("<!here>");
+  });
+
+  it("never offers keys, grants, upgrade or delete", async () => {
+    const f = await fakePac();
+    close = f.close;
+    for (const w of ["keys backup x", "tee grant --current", "upgrade", "files rm f_1", "uninstall"]) {
+      await command(f.pac, w, noop); // falls through to a question for PAC, never to those commands
+    }
+    const calls = await f.calls();
+    expect(calls.every((c) => c[0] === "goal")).toBe(true);
+  });
+});

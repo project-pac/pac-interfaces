@@ -1,12 +1,15 @@
 import bolt from "@slack/bolt";
 import { join } from "node:path";
-import { codeOf, Pac, pacHome } from "../pac/cli.ts";
-import { isApproval, txIdOf, type Env } from "../pac/types.ts";
+import { codeOf, NAME, Pac, pacHome } from "../pac/cli.ts";
+import { isApproval, type Env } from "../pac/types.ts";
+import { ACT, command, MODAL, remember, replyModal, show, type Reply } from "./commands.ts";
 import { answerRequest, decide, type Outcome } from "./decide.ts";
 import { ACTION, VIEW, approvalBlocks, contextOf, esc, parseValue, resolved, textModal, type Block } from "./render.ts";
 import { loadState, saveState, syncOnce, type SyncState } from "./sync.ts";
 
-const { App, LogLevel } = bolt;
+const { App, LogLevel, SocketModeReceiver } = bolt;
+
+export { command, HELP } from "./commands.ts";
 
 /**
  * Owner mode: one PAC home (PAC_HOME), one Slack user (PAC_SLACK_OWNER),
@@ -14,14 +17,6 @@ const { App, LogLevel } = bolt;
  * submit is checked against the owner. Runs on the owner's machine:
  * Socket Mode, no public URL, keys never leave the home.
  */
-
-export const HELP = [
-  "*PAC in Slack*",
-  "`/pac <question>` (or DM me the question): ask PAC",
-  "`/pac status`: who you are in PAC and what waits",
-  "`/pac asks`: show open questions and approvals again",
-  "PAC's questions and approvals arrive here as cards; only you can answer or decide them.",
-].join("\n");
 
 export interface SlackConfig {
   botToken: string;
@@ -44,13 +39,13 @@ export function slackConfig(env: Env = process.env): SlackConfig {
 
 const log = (event: string, extra: Record<string, unknown> = {}) => console.error(JSON.stringify({ at: new Date().toISOString(), event, ...extra }));
 
-/** Whether a `/pac` line is a question for PAC (not status / asks / help). */
+/** Whether a `/pac` line asks PAC something (kept as a record in the DM when typed elsewhere). */
 export function isQuestion(text: string): boolean {
-  const word = text.trim().toLowerCase();
-  return word !== "" && !["help", "status", "asks"].includes(word);
+  const word = text.trim().split(/\s+/)[0]?.toLowerCase() ?? "";
+  return word !== "" && !["help", "status", "asks", "threads", "show", "abort", "contacts", "files", "file", "remember", "verify", "trust"].includes(word);
 }
 
-/** The owner's own `/pac` question and PAC's reply, kept in our DM. */
+/** The owner's own `/pac` line and PAC's reply, kept in our DM. */
 export function transcript(question: string, reply: string): Block[] {
   const q = esc(question.trim().replace(/^ask\s+/i, ""))
     .split("\n")
@@ -62,35 +57,13 @@ export function transcript(question: string, reply: string): Block[] {
   ];
 }
 
-/** A typed line from the owner: what to do and what to say back. */
-export async function command(pac: Pac, text: string, resync: () => Promise<void>): Promise<string> {
-  const t = text.trim();
-  const word = t.toLowerCase();
-  if (!t || word === "help") {
-    return HELP;
-  }
-  if (word === "status") {
-    const s = await pac.status();
-    const problems = (s.problems ?? []).map((p) => (typeof p === "string" ? p : p.code));
-    return `You are *${esc(s.identity?.name ?? "?")}* in PAC ${esc(s.version)} · grant: \`${s.grant?.state ?? "none"}\` · open asks: ${s.asks?.open ?? 0}${problems.length ? ` · problems: ${problems.map((p) => `\`${p}\``).join(", ")}` : ""}`;
-  }
-  if (word === "asks") {
-    await resync();
-    return "Open questions and approvals are posted again in our DM.";
-  }
-  const sent = await pac.goal(t.replace(/^ask\s+/i, ""));
-  if (sent.receipt?.status === "rejected") {
-    return `PAC refused it: \`${sent.receipt.error ?? "rejected"}\``;
-  }
-  const tx = txIdOf(sent);
-  return `:mag: Sent to PAC${tx ? ` (\`${esc(tx)}\`)` : ""}. The answer comes here once everyone involved approves what of theirs it carries.`;
-}
-
 export async function startSlack(env: Env = process.env): Promise<void> {
   const config = slackConfig(env);
   const pac = new Pac({ ...env, PAC_HOME: config.home });
   const statePath = join(config.home, "interfaces", "slack", "state.json");
-  const app = new App({ token: config.botToken, appToken: config.appToken, socketMode: true, logLevel: LogLevel.WARN });
+  // Laptops sleep and Wi-Fi blips: wider ping windows, and Bolt reconnects by itself.
+  const receiver = new SocketModeReceiver({ appToken: config.appToken, logLevel: LogLevel.ERROR, clientPingTimeout: 15_000, serverPingTimeout: 60_000 });
+  const app = new App({ token: config.botToken, receiver, logLevel: LogLevel.WARN });
   const notOwner = "This PAC bot is linked to one person's PAC, and it isn't you.";
 
   let dm: string | undefined;
@@ -104,9 +77,11 @@ export async function startSlack(env: Env = process.env): Promise<void> {
     }
     return dm;
   };
-  const post = async (message: { text: string; blocks: Block[] }) => {
-    await app.client.chat.postMessage({ channel: await dmId(), text: message.text, blocks: message.blocks as never });
+  const post = async (message: { text: string; blocks: Block[] }, thread?: string): Promise<string | undefined> => {
+    const r = await app.client.chat.postMessage({ channel: await dmId(), text: message.text, blocks: message.blocks as never, ...(thread ? { thread_ts: thread } : {}) });
+    return r.ts;
   };
+  const blocksOf = (reply: Reply): Block[] => reply.blocks ?? resolved(reply.text);
 
   // --- Sync: one pass at a time, triggered by `pac watch` and a slow poll ----
   let state: SyncState = await loadState(statePath);
@@ -121,7 +96,7 @@ export async function startSlack(env: Env = process.env): Promise<void> {
       do {
         again = false;
         try {
-          const posted = await syncOnce(pac, state, post);
+          const posted = await syncOnce(pac, state, (m) => post(m));
           await saveState(statePath, state);
           if (posted.requests + posted.approvals + posted.answers) {
             log("synced", posted);
@@ -138,48 +113,56 @@ export async function startSlack(env: Env = process.env): Promise<void> {
     state = { ...state, asks: Object.fromEntries(Object.entries(state.asks).filter(([id]) => !open.has(id))) };
     await sync();
   };
+  const run = async (text: string): Promise<Reply> => {
+    try {
+      return await command(pac, text, resync);
+    } catch (error) {
+      return { text: `PAC: \`${esc(codeOf(error))}\`` };
+    }
+  };
 
-  const say = async (text: string) => post({ text, blocks: resolved(text) });
-
-  app.command("/pac", async ({ command: c, ack, respond }) => {
+  // --- Typed: /pac anywhere, or the owner's DM -------------------------------
+  app.command("/pac", async ({ command: c, ack, respond, client }) => {
     await ack();
     if (c.user_id !== config.owner) {
       await respond({ response_type: "ephemeral", text: notOwner });
       return;
     }
-    let reply: string;
-    try {
-      reply = await command(pac, c.text, resync);
-    } catch (error) {
-      reply = `PAC: \`${codeOf(error)}\``;
+    const reply = await run(c.text);
+    if (reply.modal) {
+      await client.views.open({ trigger_id: c.trigger_id, view: reply.modal as never });
+      return;
     }
     const inDm = c.channel_id === (await dmId().catch(() => undefined));
     if (inDm) {
       // In our DM, a normal (in_channel) reply: Slack then keeps the owner's `/pac …` line too.
-      await respond({ response_type: "in_channel", text: reply });
+      await respond({ response_type: "in_channel", text: reply.text, blocks: blocksOf(reply) as never });
       return;
     }
     // Elsewhere nobody else may see PAC's words: a private note here, the record in our DM.
-    await respond({ response_type: "ephemeral", text: reply });
+    await respond({ response_type: "ephemeral", text: reply.text, blocks: blocksOf(reply) as never });
     if (isQuestion(c.text)) {
-      await post({ text: `You asked PAC: ${c.text}`, blocks: transcript(c.text, reply) }).catch((error) => log("dm_failed", { code: codeOf(error) }));
+      await post({ text: `You asked PAC: ${c.text}`, blocks: transcript(c.text, reply.text) }).catch((error) => log("dm_failed", { code: codeOf(error) }));
     }
   });
 
-  app.message(async ({ message, say: reply }) => {
-    const m = message as { channel_type?: string; user?: string; text?: string; subtype?: string; bot_id?: string };
+  app.message(async ({ message, say }) => {
+    const m = message as { channel_type?: string; user?: string; text?: string; subtype?: string; bot_id?: string; thread_ts?: string; ts?: string };
     if (m.channel_type !== "im" || m.subtype || m.bot_id || !m.user || !m.text?.trim()) {
       return;
     }
     if (m.user !== config.owner) {
-      await reply(notOwner);
+      await say(notOwner);
       return;
     }
-    try {
-      await reply(await command(pac, m.text, resync));
-    } catch (error) {
-      await reply(`PAC: \`${codeOf(error)}\``);
+    // A reply in an answer card's Slack thread is the PAC thread's next turn.
+    const tx = m.thread_ts ? state.threads[m.thread_ts] : undefined;
+    const reply = tx ? await run(`reply ${tx} ${m.text}`) : await run(m.text);
+    if (reply.modal) {
+      await say("That opens a form: use `/pac remember <name.md>`, or put the text on the lines after the name.");
+      return;
     }
+    await say({ text: reply.text, blocks: blocksOf(reply) as never, ...(m.thread_ts ? { thread_ts: m.thread_ts } : {}) });
   });
 
   // --- Buttons and modals: the owner's click alone ---------------------------
@@ -270,10 +253,87 @@ export async function startSlack(env: Env = process.env): Promise<void> {
         const outcome = callback === VIEW.answer ? await answerRequest(pac, value, "answer", text) : await decide(pac, value, "edit", text);
         await finish(meta.channel, meta.ts, outcome, value.ask);
       } catch (error) {
-        await say(`PAC: \`${codeOf(error)}\``);
+        await post({ text: `PAC: ${codeOf(error)}`, blocks: resolved(`PAC: \`${codeOf(error)}\``) });
       }
     });
   }
+
+  // Threads: Show, Reply (modal), Abort (Slack's own confirm dialog first).
+  app.action(ACT.show, async ({ ack, body, respond }) => {
+    await ack();
+    const b = body as unknown as Body;
+    if (b.user.id !== config.owner) {
+      await respond({ response_type: "ephemeral", replace_original: false, text: notOwner });
+      return;
+    }
+    const reply = await show(pac, b.actions[0]?.value ?? "").catch((error) => ({ text: `PAC: \`${codeOf(error)}\``, blocks: undefined }));
+    await respond({ response_type: "ephemeral", replace_original: false, text: reply.text, blocks: blocksOf(reply) as never });
+  });
+
+  app.action(ACT.reply, async ({ ack, body, client, respond }) => {
+    await ack();
+    const b = body as unknown as Body;
+    if (b.user.id !== config.owner) {
+      await respond({ response_type: "ephemeral", replace_original: false, text: notOwner });
+      return;
+    }
+    await client.views.open({ trigger_id: b.trigger_id, view: replyModal(b.actions[0]?.value ?? "") as never });
+  });
+
+  app.view(MODAL.reply, async ({ ack, body, view }) => {
+    const text = (view.state.values.text?.value?.value ?? "").trim();
+    if (body.user.id !== config.owner) {
+      await ack();
+      return;
+    }
+    if (!text) {
+      await ack({ response_action: "errors", errors: { text: "Write something first." } });
+      return;
+    }
+    await ack();
+    const reply = await run(`reply ${view.private_metadata} ${text}`);
+    await post({ text: reply.text, blocks: [...transcript(text, reply.text)] }).catch((error) => log("dm_failed", { code: codeOf(error) }));
+  });
+
+  app.action(ACT.abort, async ({ ack, body, respond }) => {
+    await ack();
+    const b = body as unknown as Body;
+    const tx = b.actions[0]?.value ?? "";
+    if (b.user.id !== config.owner) {
+      await respond({ response_type: "ephemeral", replace_original: false, text: notOwner });
+      return;
+    }
+    try {
+      await pac.abort(tx);
+      await respond({ response_type: "ephemeral", replace_original: false, text: `:octagonal_sign: Aborted \`${esc(tx)}\`. Nothing is released.` });
+    } catch (error) {
+      await respond({ response_type: "ephemeral", replace_original: false, text: `PAC: \`${codeOf(error)}\`` });
+    }
+  });
+
+  app.view(MODAL.remember, async ({ ack, body, view }) => {
+    const name = (view.state.values.name?.value?.value ?? "").trim();
+    const text = (view.state.values.text?.value?.value ?? "").trim();
+    if (body.user.id !== config.owner) {
+      await ack();
+      return;
+    }
+    if (!NAME.test(name)) {
+      await ack({ response_action: "errors", errors: { name: "Letters, digits, . _ - only, e.g. travel-preferences.md" } });
+      return;
+    }
+    if (!text) {
+      await ack({ response_action: "errors", errors: { text: "Write something first." } });
+      return;
+    }
+    await ack();
+    try {
+      await pac.put(name, text);
+      await post({ text: `Saved ${name} in PAC`, blocks: resolved(`:floppy_disk: Saved \`${esc(name)}\` in PAC.`) });
+    } catch (error) {
+      await post({ text: `PAC: ${codeOf(error)}`, blocks: resolved(`PAC: \`${codeOf(error)}\``) });
+    }
+  });
 
   await app.start();
   const s = await pac.status();
@@ -299,3 +359,5 @@ export async function startSlack(env: Env = process.env): Promise<void> {
   follow();
   setInterval(() => void sync(), config.pollMs);
 }
+
+export { remember };

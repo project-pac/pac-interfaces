@@ -2,33 +2,43 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { stripFrontMatter, type Pac } from "../pac/cli.ts";
 import { isApproval } from "../pac/types.ts";
+import { threadButtons } from "./commands.ts";
 import { answerBlocks, approvalBlocks, contextOf, requestBlocks, type Block } from "./render.ts";
 
 /** What the bridge already told the owner, so a restart doesn't repeat it. */
 export interface SyncState {
   asks: Record<string, true>;
   answers: Record<string, true>;
+  /** Slack message ts of an answer card → its PAC tx, so a Slack thread reply continues the PAC thread. */
+  threads: Record<string, string>;
   /** Set after the first pass: answers released before the bridge started aren't re-sent. */
   primed: boolean;
 }
 
+const THREADS_KEPT = 500;
+
 export async function loadState(path: string): Promise<SyncState> {
   try {
     const raw = JSON.parse(await readFile(path, "utf8")) as Partial<SyncState>;
-    return { asks: raw.asks ?? {}, answers: raw.answers ?? {}, primed: raw.primed ?? false };
+    return { asks: raw.asks ?? {}, answers: raw.answers ?? {}, threads: raw.threads ?? {}, primed: raw.primed ?? false };
   } catch {
-    return { asks: {}, answers: {}, primed: false };
+    return { asks: {}, answers: {}, threads: {}, primed: false };
   }
 }
 
 export async function saveState(path: string, state: SyncState): Promise<void> {
+  const threads = Object.entries(state.threads);
+  if (threads.length > THREADS_KEPT) {
+    state.threads = Object.fromEntries(threads.slice(-THREADS_KEPT));
+  }
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const tmp = `${path}.tmp`;
   await writeFile(tmp, JSON.stringify(state), { mode: 0o600 });
   await rename(tmp, path);
 }
 
-export type Post = (message: { text: string; blocks: Block[] }) => Promise<void>;
+/** Posts to the owner's DM; returns the message ts. */
+export type Post = (message: { text: string; blocks: Block[] }) => Promise<string | undefined | void>;
 
 /**
  * One pass: every open ask not yet shown, then every answer released since
@@ -58,7 +68,13 @@ export async function syncOnce(pac: Pac, state: SyncState, post: Post): Promise<
     }
     if (state.primed) {
       const file = await pac.cat(pointer.resultFile);
-      await post({ text: `PAC answered: ${tx.intent?.prompt ?? ""}`, blocks: answerBlocks(tx, stripFrontMatter(file.content)) });
+      const ts = await post({
+        text: `PAC answered: ${tx.intent?.prompt ?? ""}`,
+        blocks: [...answerBlocks(tx, stripFrontMatter(file.content)), threadButtons(tx.id, tx.state), { type: "context", elements: [{ type: "mrkdwn", text: "Reply in this Slack thread to ask everyone in it a follow-up." }] }],
+      });
+      if (ts) {
+        state.threads[ts] = tx.id;
+      }
       posted.answers++;
     }
     state.answers[tx.id] = true;

@@ -105,6 +105,18 @@ describe("relay: linking", () => {
     expect(slow.sent[0]).toEqual({ t: "refused", code: "bad_code" });
   });
 
+  it("keeps an earlier code good after a newer one, and a link uses them all up", async () => {
+    const { relay } = await relayWith();
+    const first = relay.issueCode(U1);
+    const second = relay.issueCode(U1);
+    const s = fakeSocket();
+    await relay.open(s.socket).receive(JSON.stringify({ t: "link", code: first }));
+    expect(s.sent[0]?.t).toBe("welcome");
+    const late = fakeSocket();
+    await relay.open(late.socket).receive(JSON.stringify({ t: "link", code: second }));
+    expect(late.sent[0]).toEqual({ t: "refused", code: "bad_code" });
+  });
+
   it("signs in again with the token, and refuses an unknown one", async () => {
     const { relay, join } = await relayWith();
     const a = await join(U1);

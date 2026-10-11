@@ -37,6 +37,7 @@ export type Log = (event: string, extra?: Record<string, unknown>) => void;
 
 const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 export const CODE_TTL_MS = 10 * 60_000;
+const CODES_PER_USER = 3;
 /** Slack's response URLs last 30 minutes. */
 const EVENT_TTL_MS = 30 * 60_000;
 const EVENTS_KEPT = 5_000;
@@ -104,13 +105,23 @@ export class Relay {
     return this.#live.has(user);
   }
 
-  /** A one-time code that links whichever connector shows it to this Slack user. Replaces any earlier code of theirs. */
+  /**
+   * A one-time code that links whichever connector shows it to this Slack
+   * user. Their earlier unexpired codes stay good (Slack may show more than
+   * one), up to the newest few.
+   */
   issueCode(user: string): string {
     const now = this.#now();
+    const theirs: string[] = [];
     for (const [code, c] of this.#codes) {
-      if (c.user === user || now - c.at > CODE_TTL_MS) {
+      if (now - c.at > CODE_TTL_MS) {
         this.#codes.delete(code);
+      } else if (c.user === user) {
+        theirs.push(code);
       }
+    }
+    for (const code of theirs.slice(0, Math.max(0, theirs.length - (CODES_PER_USER - 1)))) {
+      this.#codes.delete(code);
     }
     let code: string;
     do {
@@ -229,6 +240,11 @@ export class Relay {
       this.#log("link_refused");
       this.#refuse(conn, "bad_code");
       return;
+    }
+    for (const [other, c] of this.#codes) {
+      if (c.user === issued.user) {
+        this.#codes.delete(other);
+      }
     }
     const token = randomBytes(32).toString("base64url");
     const named = typeof name === "string" && name.trim() ? name.trim().slice(0, 100) : undefined;

@@ -15,5 +15,5 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["pac/**/*.ts", "mcp/**/*.ts", "slack/**/*.ts", "hooks/**/*.ts", "dev/**/*.ts", "bin/**/*.ts", "tests/**/*.ts"]
+  "include": ["pac/**/*.ts", "mcp/**/*.ts", "slack/**/*.ts", "relay/**/*.ts", "hooks/**/*.ts", "dev/**/*.ts", "bin/**/*.ts", "tests/**/*.ts"]
 }

@@ -1,7 +1,15 @@
 # Slack interface
 
-One Slack bot for **one PAC home** and **one Slack user** (its owner). It runs
-on the owner's machine in Socket Mode: no public URL, keys never leave the home.
+Two ways to run it, with the same commands and cards:
+
+- **Shared PAC app** (anyone in the workspace): one bot, run by the
+  [relay](../relay/README.md); each person links the PAC on their own machine
+  with `/pac link` and `node bin/main.ts slack connect <code> --relay …`.
+- **Your own app** (owner mode, below): one Slack bot for **one PAC home** and
+  **one Slack user**. It runs on the owner's machine in Socket Mode: no public
+  URL, keys never leave the home.
+
+Either way, every PAC call is the person's own `pac` on their own machine.
 
 - `/pac <question>` or a DM: asks PAC (`pac goal … --wait`).
 - `/pac with Dhrumil,me <question>`: ask the people you name (`/pac contacts`).

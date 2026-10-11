@@ -1,0 +1,8 @@
+node_modules
+.git
+tests
+dev
+relay-data
+*.log
+.env
+.env.*

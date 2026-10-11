@@ -11,7 +11,8 @@ of the **`pac` CLI** the user already has installed (`pac <cmd> --json`,
 | Agent skill (Claude Code, Hermes): the agent calls the CLI itself | `skills/pac/` | copy into the host's skills dir |
 | Claude Code hook: no Bash call may run `pac decide` | `hooks/deny-pac-decide.ts` | `PreToolUse` hook |
 | MCP server (stdio), same PAC as tools | `mcp/` | `node bin/main.ts mcp` |
-| Slack, for the owner of one PAC home | `slack/` | `node bin/main.ts slack` |
+| Slack, shared app: anyone in the workspace links their own PAC | `relay/` + `slack/connector.ts` | `node bin/main.ts relay` (hosted) · `node bin/main.ts slack connect <code>` (each person) |
+| Slack, an app of your own, for the owner of one PAC home | `slack/` | `node bin/main.ts slack` |
 | Claude companion | `claude-companion/` | moving here from `pac-agent@claude-companion` |
 
 Shared: `pac/cli.ts`, a typed wrapper over `pac … --json` (exit codes,

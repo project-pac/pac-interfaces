@@ -20,6 +20,7 @@ export const HELP = [
   "`/pac abort <tx>`: end a thread you're in; nothing is released",
   "`/pac files` · `/pac file <name or id>` · `/pac remember <name.md>` (then the text, or a form opens)",
   "`/pac contacts` · `/pac status` · `/pac verify` · `/pac trust` · `/pac asks`",
+  "`/pac link` · `/pac unlink` (shared PAC app): connect this Slack account to the PAC on your Mac, or stop",
   "Grants, keys, upgrades and deleting stay at your terminal (`pac …`).",
 ].join("\n");
 
@@ -263,6 +264,10 @@ export async function command(pac: Pac, input: string, resync: () => Promise<voi
       await pac.put(n, content);
       return say(`:floppy_disk: Saved \`${esc(n)}\` in PAC. The same name again makes a new version.`);
     }
+    case "link":
+    case "unlink":
+      // The shared app's relay answers these before they reach a connector.
+      return say("Linking is for the shared PAC Slack app. This bot already runs on its owner's machine.");
     case "verify":
       if (!rest) {
         const v = await pac.verify();

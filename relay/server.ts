@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { Env } from "../pac/types.ts";
 import { actionEvent, commandEvent, messageEvent, viewEvent, type SlackReply } from "../slack/events.ts";
-import { log } from "../slack/owner.ts";
+import type { Log } from "../slack/owner.ts";
 import { MAX_FRAME, PATH } from "../slack/wire.ts";
 import { OFFLINE, onboarding, Relay, type SlackApi } from "./core.ts";
 import { Store } from "./store.ts";
@@ -46,6 +46,9 @@ export function relayConfig(env: Env = process.env): RelayConfig {
     get: env.PAC_RELAY_GET?.trim() || "git clone https://github.com/project-pac/pac-interfaces && cd pac-interfaces && npm install",
   };
 }
+
+/** One JSON line per event on stdout: hosts like Railway file stderr as errors. */
+const log: Log = (event, extra = {}) => console.log(JSON.stringify({ at: new Date().toISOString(), event, ...extra }));
 
 const ephemeral = (text: string): SlackReply => ({ response_type: "ephemeral", replace_original: false, text });
 

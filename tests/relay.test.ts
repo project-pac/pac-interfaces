@@ -9,7 +9,7 @@ import type { Message, OwnerEvent, SlackReply } from "../slack/events.ts";
 import { createOwner, type Io } from "../slack/owner.ts";
 import { reviewHash, type Block } from "../slack/render.ts";
 import type { ToConnector } from "../slack/wire.ts";
-import { approval, fakePac, request } from "./scene.ts";
+import { approval, fakePac, question } from "./scene.ts";
 
 const U1 = "U_ONE";
 const U2 = "U_TWO";
@@ -229,7 +229,7 @@ describe("owner core", () => {
 
 describe("relay + connector, end to end", () => {
   it("links, posts PAC's asks to the DM, and decides only on the owner's click", async () => {
-    const f = await fakePac({ asks: [request(), approval()] });
+    const f = await fakePac({ asks: [question(), approval()] });
     cleanup.push(f.close);
     const { relay, slack } = await relayWith();
     const served = await serveConnectors(relay, 0);
@@ -257,8 +257,8 @@ describe("relay + connector, end to end", () => {
 
     // The owner's click on the card as shown decides, and the card becomes its outcome.
     await relay.deliver({ kind: "action", user: U1, action: "pac_approve", value: JSON.stringify({ ask: "a_appr", h: reviewHash(approval().body) }), channel: `D_${U1}`, ts }, { responseUrl: "https://hooks/a" });
-    await until(async () => (await f.calls()).some((c) => c[0] === "decide"));
-    expect((await f.calls()).filter((c) => c[0] === "decide")).toEqual([["decide", "a_appr", "yes"]]);
+    await until(async () => (await f.calls()).some((c) => c[0] === "reply"));
+    expect((await f.calls()).filter((c) => c[0] === "reply")).toEqual([["reply", "a_appr", "yes", "--yes", "--wait"]]);
     await until(() => slack.updates.length === 1);
     expect(slack.updates[0]).toMatchObject({ channel: `D_${U1}`, ts });
     expect(slack.updates[0]!.message.text).toContain("Approved");
@@ -270,7 +270,7 @@ describe("relay + connector, end to end", () => {
 
     // An empty form comes back with a field error, without running pac.
     const n = (await f.calls()).length;
-    expect(await relay.deliver({ kind: "view", user: U1, callback: "pac_answer_view", values: { text: "  " }, meta: JSON.stringify({ value: JSON.stringify({ ask: "a_req" }) }) })).toEqual({
+    expect(await relay.deliver({ kind: "view", user: U1, callback: "pac_answer_view", values: { text: "  " }, meta: JSON.stringify({ value: JSON.stringify({ ask: "a_q" }) }) })).toEqual({
       delivered: true,
       ack: { response_action: "errors", errors: { text: "Write something first." } },
     });

@@ -4,13 +4,13 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { codeOf, type Pac } from "../pac/cli.ts";
-import { me, myTx, myTxs } from "./private.ts";
+import { me, mySession, mySessions } from "./private.ts";
 import type { Activity, PublicSource } from "./public.ts";
 
 /**
  * PAC's explorer. `public` is what explorer.projectpac.net runs: the network
  * as anyone can see it, and nothing else. `local` runs on a person's own
- * machine, on 127.0.0.1 only, and adds the txs they're in, read through
+ * machine, on 127.0.0.1 only, and adds the sessions they're in, read through
  * their own `pac`; it answers only its own browser tab (a token cookie) at
  * its own address (the Host header), so no other site can read it.
  */
@@ -34,7 +34,7 @@ const HEADERS = {
 };
 
 const COOKIE = "pac_explorer";
-const TX_PATH = /^\/api\/me\/tx\/([^/]+)$/;
+const SESSION_PATH = /^\/api\/me\/session\/([^/]+)$/;
 
 export interface ExplorerOptions {
   mode: "public" | "local";
@@ -127,13 +127,13 @@ export async function startExplorer(o: ExplorerOptions): Promise<Explorer> {
         if (url.pathname === "/api/me") {
           return sendJson(res, 200, await me(o.pac!), noStore);
         }
-        if (url.pathname === "/api/me/txs") {
-          return sendJson(res, 200, await myTxs(o.pac!), noStore);
+        if (url.pathname === "/api/me/sessions") {
+          return sendJson(res, 200, await mySessions(o.pac!), noStore);
         }
-        const m = url.pathname.match(TX_PATH);
+        const m = url.pathname.match(SESSION_PATH);
         if (m) {
-          const detail = await myTx(o.pac!, decodeURIComponent(m[1]!));
-          return detail ? sendJson(res, 200, detail, noStore) : sendJson(res, 404, { error: "no_such_tx" }, noStore);
+          const detail = await mySession(o.pac!, decodeURIComponent(m[1]!));
+          return detail ? sendJson(res, 200, detail, noStore) : sendJson(res, 404, { error: "no_such_session" }, noStore);
         }
       } catch (error) {
         return sendJson(res, 502, { error: codeOf(error) }, noStore);

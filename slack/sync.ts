@@ -1,17 +1,18 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { stripFrontMatter, type Pac } from "../pac/cli.ts";
-import { isApproval } from "../pac/types.ts";
-import { threadButtons } from "./commands.ts";
-import { answerBlocks, approvalBlocks, contextOf, requestBlocks, type Block } from "./render.ts";
+import { ended, latest } from "../pac/types.ts";
+import { sessionButtons } from "./commands.ts";
+import { answerBlocks, askBlocks, askSummary, type Block } from "./render.ts";
 
 /** What the bridge already told the owner, so a restart doesn't repeat it. */
 export interface SyncState {
   asks: Record<string, true>;
+  /** Results posted, by `<session>:<turn>`. */
   answers: Record<string, true>;
-  /** Slack message ts of an answer card → its PAC tx, so a Slack thread reply continues the PAC thread. */
+  /** Slack message ts of an answer card → its PAC session, so a Slack thread reply is the session's next turn. */
   threads: Record<string, string>;
-  /** Set after the first pass: answers released before the bridge started aren't re-sent. */
+  /** Set after the first pass: results released before the bridge started aren't re-sent. */
   primed: boolean;
 }
 
@@ -41,43 +42,40 @@ export async function saveState(path: string, state: SyncState): Promise<void> {
 export type Post = (message: { text: string; blocks: Block[] }) => Promise<string | undefined | void>;
 
 /**
- * One pass: every open ask not yet shown, then every answer released since
- * the bridge started. An item is marked seen only after it was posted.
+ * One pass: every open ask not yet shown, of any kind, then every result
+ * released since the bridge started. An item is marked seen only after it
+ * was posted.
  */
-export async function syncOnce(pac: Pac, state: SyncState, post: Post): Promise<{ requests: number; approvals: number; answers: number }> {
-  const posted = { requests: 0, approvals: 0, answers: 0 };
-  const [asks, txs] = await Promise.all([pac.asks(), pac.txs()]);
-  const byTx = new Map(txs.map((t) => [t.tx.id, t.tx]));
+export async function syncOnce(pac: Pac, state: SyncState, post: Post): Promise<{ asks: number; answers: number }> {
+  const posted = { asks: 0, answers: 0 };
+  const [asks, sessions] = await Promise.all([pac.asks(), pac.sessions()]);
   for (const ask of asks) {
     if (ask.status !== "open" || state.asks[ask.id]) {
       continue;
     }
-    const ctx = contextOf(byTx.get(ask.tx));
-    if (isApproval(ask)) {
-      await post({ text: `PAC wants your approval for: ${ctx.goal}`, blocks: approvalBlocks(ask, ctx).blocks });
-      posted.approvals++;
-    } else {
-      await post({ text: `PAC asks: ${(ask.body as { question: string }).question}`, blocks: requestBlocks(ask as never, ctx) });
-      posted.requests++;
-    }
+    await post({ text: askSummary(ask), blocks: askBlocks(ask) });
     state.asks[ask.id] = true;
+    posted.asks++;
   }
-  for (const { pointer, tx } of txs) {
-    if (!pointer.resultFile || state.answers[tx.id]) {
-      continue;
-    }
-    if (state.primed) {
-      const file = await pac.cat(pointer.resultFile);
-      const ts = await post({
-        text: `PAC answered: ${tx.intent?.prompt ?? ""}`,
-        blocks: [...answerBlocks(tx, stripFrontMatter(file.content)), threadButtons(tx.id, tx.state), { type: "context", elements: [{ type: "mrkdwn", text: "Reply in this Slack thread to ask everyone in it a follow-up." }] }],
-      });
-      if (ts) {
-        state.threads[ts] = tx.id;
+  for (const session of sessions) {
+    for (const result of session.results ?? []) {
+      const key = `${session.id}:${result.turn}`;
+      if (state.answers[key]) {
+        continue;
       }
-      posted.answers++;
+      if (state.primed) {
+        const file = await pac.cat(result.file);
+        const ts = await post({
+          text: `PAC answered: ${session.turns.find((t) => t.n === result.turn)?.prompt ?? ""}`,
+          blocks: [...answerBlocks(session, result.turn, stripFrontMatter(file.content)), sessionButtons(session.id, ended(latest(session)?.status ?? "answered")), { type: "context", elements: [{ type: "mrkdwn", text: "Reply in this Slack thread to ask everyone in it a follow-up." }] }],
+        });
+        if (ts) {
+          state.threads[ts] = session.id;
+        }
+        posted.answers++;
+      }
+      state.answers[key] = true;
     }
-    state.answers[tx.id] = true;
   }
   state.primed = true;
   return posted;

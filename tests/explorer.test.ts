@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { decodeObject, loadNetwork, PublicSource, type Fetch } from "../explorer/public.ts";
 import { startExplorer, WEB, type Explorer } from "../explorer/server.ts";
 import { jcs, sha256Hex, verifySig } from "../explorer/verify.ts";
-import { fakePac, tx } from "./scene.ts";
+import { fakePac, question, S1, session } from "./scene.ts";
 
 let cleanup: (() => Promise<void> | void)[] = [];
 afterEach(async () => {
@@ -210,16 +210,16 @@ describe("explorer server", () => {
     expect(page.body).toMatch(/app\.js\?v=[0-9a-f]{12}/);
     expect(JSON.parse((await get(e.port, "/api/network")).body).height).toBe(42);
     expect(JSON.parse((await get(e.port, "/api/mode")).body)).toEqual({ mode: "public", private: false });
-    for (const path of ["/api/me", "/api/me/txs", "/api/me/tx/tx_1"]) {
+    for (const path of ["/api/me", "/api/me/sessions", `/api/me/session/${S1}`]) {
       expect((await get(e.port, path)).status).toBe(404);
     }
     expect(await e.calls()).toEqual([]);
   });
 
   it("local: answers only its own address, and only the browser holding the token", async () => {
-    const e = await explorer("local", { txs: [tx("tx_1")] });
+    const e = await explorer("local", { sessions: [session()] });
     expect((await get(e.port, "/api/network", { host: `evil.example:${e.port}` })).status).toBe(421);
-    expect((await get(e.port, "/api/me/txs")).status).toBe(401);
+    expect((await get(e.port, "/api/me/sessions")).status).toBe(401);
     expect((await get(e.port, "/?t=wrong")).status).toBe(403);
     expect(await e.calls()).toEqual([]);
 
@@ -228,27 +228,26 @@ describe("explorer server", () => {
     const cookie = String(signin.headers["set-cookie"]).split(";")[0]!;
     expect(String(signin.headers["set-cookie"])).toContain("HttpOnly");
     expect(String(signin.headers["set-cookie"])).toContain("SameSite=Strict");
-    const txs = await get(e.port, "/api/me/txs", { cookie });
-    expect(txs.status).toBe(200);
-    expect(txs.headers["cache-control"]).toBe("no-store");
-    expect(JSON.parse(txs.body)[0].tx.id).toBe("tx_1");
+    const sessions = await get(e.port, "/api/me/sessions", { cookie });
+    expect(sessions.status).toBe(200);
+    expect(sessions.headers["cache-control"]).toBe("no-store");
+    expect(JSON.parse(sessions.body)[0].id).toBe(S1);
     expect(JSON.parse((await get(e.port, "/api/mode", { cookie })).body)).toEqual({ mode: "local", private: true });
   });
 
-  it("local: a tx's detail through the person's own pac, and nothing for a tx they aren't in", async () => {
-    const shown = { tx: { ...tx("tx_1").tx, executor: { codeIdentity: "cpu@0.3.1+bb", measurement: "2".repeat(64) } }, pointer: { tx: "tx_1", role: "initiator", resultFile: "f_r", at: "2026-10-09T04:00:00Z" }, rounds: [{ n: 1, resultsSha256: "abc", editsFrom: [] }], referencedBy: [] };
-    const e = await explorer("local", { txShow: { tx_1: shown, tx_gone: null }, asks: [{ id: "a_1", tx: "tx_1", step: "ask-1", status: "answered", body: { kind: "request", question: "Where?" }, text: "PAC asks: Where?" }], cat: { f_r: { name: "r.result.md", content: "---\nk: v\n---\nAbout 1400 EUR." } } });
+  it("local: a session's detail through the person's own pac, and nothing for one they aren't in", async () => {
+    const mine = session(S1, { results: [{ turn: 1, file: "f_r", batch: "b_1" }] });
+    const e = await explorer("local", { sessions: [mine], asks: [{ ...question("a_1", "answered"), text: "PAC asks: Where?" }, { ...question("a_other"), session: "s_9999" }], cat: { f_r: { name: "r.result.md", content: "---\nk: v\n---\nAbout 1400 EUR." } } });
     const cookie = String((await get(e.port, "/?t=tok")).headers["set-cookie"]).split(";")[0]!;
-    const d = JSON.parse((await get(e.port, "/api/me/tx/tx_1", { cookie })).body);
-    expect(d.shown.tx.executor.codeIdentity).toBe("cpu@0.3.1+bb");
-    expect(d.asks).toHaveLength(1);
-    expect(d.result).toBe("About 1400 EUR.");
-    expect((await get(e.port, "/api/me/tx/tx_gone", { cookie })).status).toBe(404);
-    expect((await get(e.port, "/api/me/tx/not-a-tx", { cookie })).status).toBe(404);
+    const d = JSON.parse((await get(e.port, `/api/me/session/${S1}`, { cookie })).body);
+    expect(d.session.agent.codeIdentity).toBe("cpu@0.3.1+bb");
+    expect(d.asks.map((a: { id: string }) => a.id)).toEqual(["a_1"]);
+    expect(d.results).toEqual([{ turn: 1, file: "f_r", text: "About 1400 EUR." }]);
+    expect((await get(e.port, "/api/me/session/s_deadbeef", { cookie })).status).toBe(404);
+    expect((await get(e.port, "/api/me/session/not-a-session", { cookie })).status).toBe(404);
     const calls = await e.calls();
-    expect(calls).toContainEqual(["tx", "show", "tx_1"]);
-    expect(calls).toContainEqual(["asks", "--all", "--tx", "tx_1"]);
-    expect(calls.some((c) => c.includes("not-a-tx"))).toBe(false);
+    expect(calls).toContainEqual(["session", S1]);
+    expect(calls.some((c) => c.includes("not-a-session"))).toBe(false);
   });
 });
 

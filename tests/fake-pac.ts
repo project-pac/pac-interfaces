@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// A stand-in `pac` for tests: reads a scene from $FAKE_PAC_DIR/scene.json,
+// A stand-in `pac` (0.6) for tests: reads a scene from $FAKE_PAC_DIR/scene.json,
 // records every argv to calls.jsonl, prints what `pac … --json` would.
 import { appendFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -17,37 +17,63 @@ if (args.at(-1) !== "--json") {
   out({ error: "fake pac wants --json last", code: "usage" }, 2);
 }
 const a = args.slice(0, -1);
-const key = a[0] === "tx" || a[0] === "files" ? `${a[0]} ${a[1]}` : a[0]!;
+const key = a[0] === "files" || a[0] === "system" ? `${a[0]} ${a[1]}` : a[0]!;
 const fail = scene.fail?.[key];
 if (fail) {
   out({ error: fail.error ?? key, code: fail.code }, fail.exit ?? 2);
 }
+const flag = (name: string) => a.find((x) => x === `--${name}` || x.startsWith(`--${name}=`));
+const flagValue = (name: string) => {
+  const i = a.indexOf(`--${name}`);
+  return i >= 0 ? a[i + 1] : a.find((x) => x.startsWith(`--${name}=`))?.slice(name.length + 3);
+};
+type Ask = { id: string; session: string; status: string; body: { kind: string } };
+const asks: Ask[] = scene.asks ?? [];
+const sessions: { id: string }[] = scene.sessions ?? [];
+
 switch (key) {
   case "status":
+    out(scene.ready ?? { ready: true, problems: [], asks: asks.filter((x) => x.status === "open"), sessions: [] });
+  case "system status":
     out(scene.status);
+  case "system verify":
+    out({ checked: 3, problems: [] });
+  case "system trust":
+    out({ status: "up_to_date", deployment: { name: "PAC", current: ["m".repeat(64)] } });
   case "asks": {
-    const tx = a.includes("--tx") ? a[a.indexOf("--tx") + 1] : undefined;
-    const asks = (a.includes("--all") ? scene.asks : scene.asks.filter((x: { status: string }) => x.status === "open")).filter((x: { tx: string }) => !tx || x.tx === tx);
-    out(asks);
+    const session = flagValue("session");
+    out((flag("all") ? asks : asks.filter((x) => x.status === "open")).filter((x) => !session || x.session === session));
   }
-  case "tx ls":
-    out(scene.txs ?? []);
-  case "tx show":
-    if (scene.txShow?.[a[2]!] === null) {
-      out({ error: "no such tx", code: "unknown_tx" }, 2);
-    }
-    out(scene.txShow?.[a[2]!] ?? { id: a[2], rounds: [] });
+  case "sessions":
+    out(sessions);
+  case "session": {
+    const found = sessions.filter((s) => s.id === a[1] || s.id.startsWith(a[1]!));
+    out(found.length === 1 ? found[0] : { error: "no such session", code: "unknown_session" }, found.length === 1 ? 0 : 2);
+  }
+  case "people":
+    out(scene.people ?? []);
   case "files ls":
     out(scene.files ?? []);
   case "files cat":
     out(scene.cat?.[a[2]!] ?? { error: "no file", code: "usage" }, scene.cat?.[a[2]!] ? 0 : 2);
   case "files put":
     out({ file: "f_new", name: a[4] });
-  case "goal":
-    out(scene.goal ?? { msg: "m_1", receipt: { status: "accepted" }, tx: "tx_new" });
-  case "answer":
-  case "decide":
-    out({ msg: "m_2" });
+  case "prompt":
+    out(scene.prompt ?? { status: "accepted", msg: "m_1", session: "s_0123456789abcdef0123456789abcdef", receipt: { status: "accepted" } });
+  case "abort":
+    out({ status: "accepted", msg: "m_3", session: a[1], receipt: { status: "accepted" } });
+  case "reply": {
+    const ask = asks.find((x) => x.id === a[1]);
+    if (!ask) {
+      out({ error: "no such ask", code: "unknown_ask" }, 2);
+    }
+    // Consent is only previewed without --yes: an approval's or access ask's yes, a group submission.
+    const consents = a[2] === "yes" || (ask!.body.kind === "data" && !flag("skip"));
+    if (consents && !flag("yes")) {
+      out({ status: "preview", ask: ask!.id, text: "preview" });
+    }
+    out({ status: "accepted", msg: "m_2", receipt: { status: "accepted" } });
+  }
   case "watch":
     for (const e of scene.watch ?? []) {
       process.stdout.write(JSON.stringify(e) + "\n");

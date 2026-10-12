@@ -1,9 +1,8 @@
 import { codeOf, NAME, type Pac } from "../pac/cli.ts";
-import { isApproval } from "../pac/types.ts";
 import { ACT, command, MODAL, replyModal, show, type Reply } from "./commands.ts";
-import { answerRequest, decide, type Outcome } from "./decide.ts";
+import { access, answerQuestion, decide, submitData, type Outcome } from "./decide.ts";
 import type { Message, OwnerEvent, SlackReply, ViewAck } from "./events.ts";
-import { ACTION, VIEW, approvalBlocks, contextOf, esc, parseValue, resolved, textModal, type Block } from "./render.ts";
+import { ACTION, VIEW, askBlocks, askSummary, esc, parseValue, resolved, textModal, type Block } from "./render.ts";
 import { loadState, saveState, syncOnce, type SyncState } from "./sync.ts";
 
 /**
@@ -34,7 +33,7 @@ export const log: Log = (event, extra = {}) => console.error(JSON.stringify({ at
 
 export const NOT_OWNER = "This PAC bot is linked to one person's PAC, and it isn't you.";
 
-const RESERVED = ["help", "status", "asks", "threads", "show", "abort", "contacts", "files", "file", "remember", "verify", "trust", "link", "unlink"];
+const RESERVED = ["help", "status", "asks", "sessions", "threads", "show", "abort", "people", "contacts", "files", "file", "remember", "verify", "trust", "link", "unlink"];
 
 /** Whether a `/pac` line asks PAC something (kept as a record in the DM when typed elsewhere). */
 export function isQuestion(text: string): boolean {
@@ -92,7 +91,7 @@ export function createOwner(o: OwnerOptions): Owner {
         try {
           const posted = await syncOnce(pac, state, (m) => port.post(m));
           await saveState(o.statePath, state);
-          if (posted.requests + posted.approvals + posted.answers) {
+          if (posted.asks + posted.answers) {
             say("synced", posted);
           }
         } catch (error) {
@@ -122,9 +121,8 @@ export function createOwner(o: OwnerOptions): Owner {
     }
     if (!outcome.ok && outcome.reason === "changed") {
       const ask = await pac.ask(askId);
-      if (isApproval(ask) && ask.status === "open") {
-        const ctx = contextOf((await pac.txs()).find((t) => t.tx.id === ask.tx)?.tx);
-        await port.post({ text: `PAC wants your approval for: ${ctx.goal}`, blocks: approvalBlocks(ask, ctx).blocks });
+      if (ask.status === "open") {
+        await port.post({ text: askSummary(ask), blocks: askBlocks(ask) });
       }
     }
   };
@@ -160,37 +158,47 @@ export function createOwner(o: OwnerOptions): Owner {
 
   const onAction = async (e: Extract<OwnerEvent, { kind: "action" }>, io: Io) => {
     try {
+      const value = parseValue(e.value);
+      const done = async (outcome: Outcome) => finish(e.channel, e.ts, outcome, value!.ask);
+      // A form's meta carries where the card is, so the submitted form can resolve it.
+      const form = (callback: string, title: string, label: string, optional = false) => io.openView(textModal(callback, JSON.stringify({ value: e.value ?? "", channel: e.channel, ts: e.ts }), title, label, optional));
       switch (e.action) {
         case ACTION.approve:
         case ACTION.decline:
+          return value ? done(await decide(pac, value, e.action === ACTION.approve ? "yes" : "no")) : undefined;
+        case ACTION.edit:
+          return form(VIEW.edit, "Ask for a change", "What should change about your material?");
+        case ACTION.answer:
+          return form(VIEW.answer, "Answer PAC", "Your answer");
+        case ACTION.choose:
+          return value?.c !== undefined ? done(await answerQuestion(pac, value, { choice: value.c })) : undefined;
         case ACTION.skip: {
-          const value = parseValue(e.value);
           if (!value) {
             return;
           }
-          const outcome = e.action === ACTION.skip ? await answerRequest(pac, value, "skip") : await decide(pac, value, e.action === ACTION.approve ? "yes" : "no");
-          await finish(e.channel, e.ts, outcome, value.ask);
-          return;
+          const ask = await pac.ask(value.ask);
+          return done(ask.body.kind === "data" ? await submitData(pac, value, "skip") : await answerQuestion(pac, value, "skip"));
         }
-        case ACTION.answer:
-        case ACTION.edit: {
-          const meta = JSON.stringify({ value: e.value ?? "", channel: e.channel, ts: e.ts });
-          await io.openView(e.action === ACTION.answer ? textModal(VIEW.answer, meta, "Answer PAC", "Your answer") : textModal(VIEW.edit, meta, "Ask for a change", "What should change about your material?"));
-          return;
-        }
-        // Threads: Show, Reply (modal), Abort (Slack's own confirm dialog first).
+        case ACTION.pass:
+          return value ? done(await answerQuestion(pac, value, "decline")) : undefined;
+        case ACTION.allow:
+          return value ? done(await access(pac, value, "yes")) : undefined;
+        case ACTION.deny:
+          return form(VIEW.deny, "Keep it closed", "Why, if you like (goes only to PAC)", true);
+        case ACTION.submit:
+          return form(VIEW.submit, "Submit to the group", "Your submission (the whole group, as shown, sees it run)");
+        case ACTION.submitChoice:
+          return value?.c !== undefined ? done(await submitData(pac, value, { choice: value.c })) : undefined;
+        // Sessions: Show, Reply (modal), Abort (Slack's own confirm dialog first).
         case ACT.show: {
           const reply = await show(pac, e.value ?? "");
-          await io.respond({ ...aside(reply.text), blocks: blocksOf(reply) });
-          return;
+          return io.respond({ ...aside(reply.text), blocks: blocksOf(reply) });
         }
         case ACT.reply:
-          await io.openView(replyModal(e.value ?? ""));
-          return;
+          return io.openView(replyModal(e.value ?? ""));
         case ACT.abort:
           await pac.abort(e.value ?? "");
-          await io.respond(aside(`:octagonal_sign: Aborted \`${esc(e.value ?? "")}\`. Nothing is released.`));
-          return;
+          return io.respond(aside(`:octagonal_sign: Aborted \`${esc(e.value ?? "")}\`'s current turn. Nothing is released.`));
       }
     } catch (error) {
       await io.respond(aside(failed(error)));
@@ -218,11 +226,13 @@ export function createOwner(o: OwnerOptions): Owner {
       }
       return;
     }
-    if (e.callback !== VIEW.answer && e.callback !== VIEW.edit && e.callback !== MODAL.reply) {
+    const known: string[] = [VIEW.answer, VIEW.edit, VIEW.deny, VIEW.submit, MODAL.reply];
+    if (!known.includes(e.callback)) {
       await io.ack();
       return;
     }
-    if (!text) {
+    // Only a reason for keeping a file closed may be left empty.
+    if (!text && e.callback !== VIEW.deny) {
       await io.ack({ response_action: "errors", errors: { text: "Write something first." } });
       return;
     }
@@ -243,7 +253,14 @@ export function createOwner(o: OwnerOptions): Owner {
       return;
     }
     try {
-      const outcome = e.callback === VIEW.answer ? await answerRequest(pac, value, "answer", text) : await decide(pac, value, "edit", text);
+      const outcome =
+        e.callback === VIEW.answer
+          ? await answerQuestion(pac, value, { text })
+          : e.callback === VIEW.edit
+            ? await decide(pac, value, "edit", text)
+            : e.callback === VIEW.deny
+              ? await access(pac, value, "no", text)
+              : await submitData(pac, value, { text });
       await finish(meta.channel, meta.ts, outcome, value.ask);
     } catch (error) {
       await port.post({ text: `PAC: ${codeOf(error)}`, blocks: resolved(failed(error)) });
@@ -289,7 +306,7 @@ export function createOwner(o: OwnerOptions): Owner {
         let timer: NodeJS.Timeout | undefined;
         watcher = pac.watch(
           (event) => {
-            if (event.event === "ask" || event.event === "tx" || event.event === "pointer") {
+            if (event.event === "ask" || event.event === "session" || event.event === "receipt") {
               clearTimeout(timer);
               timer = setTimeout(() => void sync(), 1_000);
             }

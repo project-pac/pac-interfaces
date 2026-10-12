@@ -51,8 +51,9 @@ const hash = (s, n) => h("span", { class: "hash", title: s }, n ? short(s, n) : 
 const full = (s) => [hash(s), copyBtn(s)];
 const sig = (ok, yes = "Verified", no = "Unverified") => h("span", { class: `badge ${ok ? "ok" : "bad"}` }, ok ? yes : no);
 
-const ENDED_OK = new Set(["succeeded"]);
-const ENDED_BAD = new Set(["failed", "expired", "aborted", "declined", "rejected"]);
+const ENDED_OK = new Set(["answered"]);
+const ENDED_BAD = new Set(["failed", "expired"]);
+const latest = (s) => s.turns?.at(-1);
 function state(s) {
   const cls = ENDED_OK.has(s) ? "ok" : ENDED_BAD.has(s) ? "bad" : s === "current" ? "live" : s === "retired" ? "off" : "live";
   return h("span", { class: `badge ${cls}` }, s ?? "unknown");
@@ -81,7 +82,7 @@ async function api(path) {
 }
 async function loadMine() {
   if (!mode.private) return undefined;
-  mine ??= api("/api/me/txs").catch(() => undefined);
+  mine ??= api("/api/me/sessions").catch(() => undefined);
   return mine;
 }
 
@@ -166,24 +167,28 @@ function postsTable(posts) {
   ]));
 }
 
-function txRows(txs) {
-  return txs.map(({ tx, pointer }) => [
-    h("a", { href: `#/tx/${tx.id}`, class: "clip" }, tx.intent?.prompt || tx.id),
-    state(tx.state),
-    pointer?.role ?? "",
-    String(tx.participants?.length ?? 0),
-    pointer?.resultFile ? h("span", { class: "badge ok" }, "released") : "",
-    time(tx.updatedAt ?? tx.createdAt),
-  ]);
+function sessionRows(sessions) {
+  return sessions.map((x) => {
+    const t = latest(x);
+    return [
+      h("a", { href: `#/session/${x.id}`, class: "clip" }, x.group ? `${x.group.name} · run ${x.group.run}` : t?.prompt || x.id),
+      state(t?.status),
+      (x.you ?? []).join(", "),
+      String(x.people?.length ?? 0),
+      x.results?.length ? h("span", { class: "badge ok" }, "released") : x.needsYou ? h("span", { class: "badge live" }, "waits on you") : "",
+      time(t?.updatedAt ?? t?.createdAt),
+    ];
+  });
 }
+const SESSION_HEAD = ["Prompt", "State", "You", "People", "", "Updated"];
 
 function privateNotice(what) {
   return h("div", { class: "notice" },
-    h("h1", {}, what ?? "Txs are private"),
-    h("p", { class: "lede" }, "Every PAC tx is encrypted to its participants: its goal, who's in it, the files it used and its result. Nobody else can read it, this explorer included. That's the point of PAC."),
-    h("p", {}, "If you're in this tx, see every detail of it with your own keys, on your own machine:"),
+    h("h1", {}, what ?? "Sessions are private"),
+    h("p", { class: "lede" }, "Every PAC session is encrypted to the people in it: its prompts, who's in it, the files it read and its results. Nobody else can read it, this explorer included. That's the point of PAC."),
+    h("p", {}, "If you're in this session, see every detail of it with your own keys, on your own machine:"),
     h("pre", {}, "git clone https://github.com/project-pac/pac-interfaces\ncd pac-interfaces && npm install\nnode bin/main.ts explorer"),
-    h("p", { class: "small muted" }, "It opens this explorer at 127.0.0.1, reading your txs through your own pac. Nothing leaves your machine."));
+    h("p", { class: "small muted" }, "It opens this explorer at 127.0.0.1, reading your sessions through your own pac. Nothing leaves your machine."));
 }
 
 // ---- Pages -----------------------------------------------------------------
@@ -192,9 +197,9 @@ async function overview() {
   const d = network.deployment;
   const cur = currentTee();
   const releases = d.releases;
-  const txs = await loadMine();
-  const sixth = txs
-    ? h("a", { class: "stat red", href: "#/txs" }, h("span", { class: "n" }, fmt(txs.length)), h("span", { class: "k" }, "Your txs"), h("span", { class: "d" }, `${txs.filter(({ tx }) => !ENDED_OK.has(tx.state) && !ENDED_BAD.has(tx.state)).length} open`))
+  const yours = await loadMine();
+  const sixth = yours
+    ? h("a", { class: "stat red", href: "#/sessions" }, h("span", { class: "n" }, fmt(yours.length)), h("span", { class: "k" }, "Your sessions"), h("span", { class: "d" }, `${yours.filter((x) => x.needsYou).length} wait on you`))
     : h("a", { class: "stat red", href: "#/tees" }, h("span", { class: "n" }, fmt(network.tees.filter((t) => t.handover).length)), h("span", { class: "k" }, "Handovers"), h("span", { class: "d" }, "TEE to TEE"));
   const out = [
     h("h1", {}, `${d.name} network`),
@@ -212,7 +217,7 @@ async function overview() {
     ...(cur ? section("Proof chain · the TEE that's home now", "green", chainFor(cur)) : []),
     ...section("Activity", null, activity((await api("/api/activity").catch(() => ({ samples: [] }))).samples)),
   ];
-  if (txs) out.push(...section("Your latest txs", "green", table(["Goal", "State", "Role", "People", "Result", "Updated"], txRows(txs.slice(0, 6)), "You're in no txs yet.")));
+  if (yours) out.push(...section("Your latest sessions", "green", table(SESSION_HEAD, sessionRows(yours.slice(0, 6)), "You're in no sessions yet.")));
   out.push(...section("Latest on the bulletin", "red", postsTable([...network.posts].reverse().slice(0, 6))));
   out.push(...section("What's public here, and what isn't", null, publicPrivate()));
   return out;
@@ -224,10 +229,10 @@ function publicPrivate() {
       h("li", {}, "The deployment descriptor: releases, their measurements, signed"),
       h("li", {}, "The bulletin: each TEE's attestation and every program it loads"),
       h("li", {}, "The vault's height, profiles, TEE handovers, program manifests"))),
-    h("div", { class: "card private" }, h("h3", {}, "Private: only a tx's participants"), h("ul", {},
-      h("li", {}, "A goal, who's in it, and which files it used"),
+    h("div", { class: "card private" }, h("h3", {}, "Private: only the people in a session"), h("ul", {},
+      h("li", {}, "A prompt, who's in it, and which files it read"),
       h("li", {}, "PAC's questions, the answers, approvals, results"),
-      h("li", {}, mode.private ? "Yours are under Your txs, read through your own pac" : "Yours: run the explorer on your own machine"))));
+      h("li", {}, mode.private ? "Yours are under Your sessions, read through your own pac" : "Yours: run the explorer on your own machine"))));
 }
 
 function teesPage() {
@@ -354,8 +359,8 @@ function peoplePage() {
 async function personPage(id) {
   const p = profileOf(id);
   if (!p) return [h("h1", {}, "No such profile")];
-  const txs = await loadMine();
-  const shared = txs?.filter(({ tx }) => tx.participants?.some((x) => x.user === id)) ?? [];
+  const yours = await loadMine();
+  const shared = yours?.filter((x) => x.people?.some((p) => p.user === id)) ?? [];
   return [
     crumb(h("a", { href: "#/people" }, "People"), p.name),
     h("h1", {}, p.name || "(no name)"),
@@ -367,7 +372,7 @@ async function personPage(id) {
       ["Signature", sig(p.sigValid, "signed by its own key", "doesn't verify")],
       p.id === network.deployment.publisher && ["Role", h("span", { class: "badge live" }, "PAC's publisher")],
     ]),
-    ...(txs ? section(`Your txs with ${p.name}`, "green", table(["Goal", "State", "Role", "People", "Result", "Updated"], txRows(shared), "No txs with them.")) : []),
+    ...(yours ? section(`Your sessions with ${p.name}`, "green", table(SESSION_HEAD, sessionRows(shared), "No sessions with them.")) : []),
   ];
 }
 
@@ -394,53 +399,56 @@ function postPage(i) {
   ];
 }
 
-async function txsPage() {
-  if (!mode.private) return [privateNotice("Your txs")];
-  const txs = await loadMine();
-  if (!txs) return [h("h1", {}, "Your txs"), h("p", { class: "warn" }, "Your pac didn't answer. Is PAC running? Try `pac status`.")];
+async function sessionsPage() {
+  if (!mode.private) return [privateNotice("Your sessions")];
+  const all = await loadMine();
+  if (!all) return [h("h1", {}, "Your sessions"), h("p", { class: "warn" }, "Your pac didn't answer. Is PAC running? Try `pac status`.")];
   return [
-    h("h1", {}, "Your txs"),
-    h("p", { class: "lede" }, "Every tx you're in, read through your own pac on this machine. Only you see this page."),
-    table(["Goal", "State", "Role", "People", "Result", "Updated"], txRows(txs), "You're in no txs yet. Ask PAC something."),
+    h("h1", {}, "Your sessions"),
+    h("p", { class: "lede" }, "Every session you're in, read through your own pac on this machine. Only you see this page."),
+    table(SESSION_HEAD, sessionRows(all), "You're in no sessions yet. Ask PAC something."),
   ];
 }
 
-async function txPage(id) {
-  if (!mode.private) return [crumb("Txs", id), privateNotice("This tx is private")];
+const KIND = { question: "question", access: "access to a file", approval: "approval", data: "group submission" };
+
+async function sessionPage(id) {
+  if (!mode.private) return [crumb("Sessions", id), privateNotice("This session is private")];
   let d;
   try {
-    d = await api(`/api/me/tx/${encodeURIComponent(id)}`);
+    d = await api(`/api/me/session/${encodeURIComponent(id)}`);
   } catch (e) {
-    return [crumb(h("a", { href: "#/txs" }, "Your txs"), id), h("h1", {}, "Not one of yours"), h("p", { class: "empty" }, e.status === 404 ? "Your pac has no tx by that id: you aren't in it, or it doesn't exist." : "Your pac didn't answer.")];
+    return [crumb(h("a", { href: "#/sessions" }, "Your sessions"), id), h("h1", {}, "Not one of yours"), h("p", { class: "empty" }, e.status === 404 ? "Your pac has no session by that id: you aren't in it, or it doesn't exist." : "Your pac didn't answer.")];
   }
-  const s = d.shown;
-  const tx = s.tx;
-  const names = new Map((tx.participants ?? []).map((p) => [p.user, p.name]));
+  const x = d.session;
+  const names = new Map((x.people ?? []).map((p) => [p.user, p.name]));
   const who = (u) => (profileOf(u) ? person(u) : h("span", { title: u }, names.get(u) ?? short(u, 10)));
-  const exec = tx.executor ?? {};
-  const rel = exec.codeIdentity ? releaseOf(exec.codeIdentity) : undefined;
-  const ranOn = network.tees.filter((t) => t.codeIdentity && t.codeIdentity === exec.codeIdentity);
-  const history = tx.history ?? [];
+  const agent = x.agent ?? {};
+  const rel = agent.codeIdentity ? releaseOf(agent.codeIdentity) : undefined;
+  const ranOn = network.tees.filter((t) => t.codeIdentity && t.codeIdentity === agent.codeIdentity);
+  const first = x.turns?.[0];
+  const last = latest(x);
   return [
-    crumb(h("a", { href: "#/txs" }, "Your txs"), h("span", { class: "mono" }, short(id, 16))),
-    h("div", { class: "goal" }, tx.intent?.prompt ?? "(no goal text)"),
-    h("div", { class: "meta" }, state(tx.state), h("span", {}, "asked by ", who(tx.initiator)), h("span", {}, "started ", time(tx.createdAt)), tx.expiresAt ? h("span", {}, "expires ", time(tx.expiresAt)) : null, h("span", {}, hash(tx.id), copyBtn(tx.id))),
+    crumb(h("a", { href: "#/sessions" }, "Your sessions"), h("span", { class: "mono" }, x.ref ?? short(x.id, 16))),
+    x.group ? h("div", { class: "meta" }, h("span", { class: "badge live" }, "group"), h("b", {}, x.group.name), `run ${x.group.run}`) : null,
+    h("div", { class: "goal" }, first?.prompt ?? "(no prompt)"),
+    h("div", { class: "meta" }, state(last?.status), last?.failure ? h("span", { class: "badge bad" }, last.failure) : null, first ? h("span", {}, "asked by ", who(first.by)) : null, first ? h("span", {}, "started ", time(first.createdAt)) : null, h("span", {}, "you: ", (x.you ?? []).join(", ")), h("span", {}, hash(x.id), copyBtn(x.id))),
     ...section("Proof", "green", sheet([
-      ["Computed by", exec.codeIdentity ? [h("span", { class: "mono" }, exec.codeIdentity), " ", rel ? [h("a", { href: `#/release/${rel.measurement}` }, `release ${rel.version ?? ""}`), " ", state(rel.status)] : h("span", { class: "badge bad" }, "not a known release")] : "not computed yet"],
-      ["Measurement", exec.measurement ? [hash(exec.measurement), rel ? (rel.measurement === exec.measurement ? h("span", { class: "badge ok" }, "matches the signed descriptor") : h("span", { class: "badge bad" }, "differs from the descriptor")) : null] : "–"],
+      ["Answered by", agent.codeIdentity ? [h("span", { class: "mono" }, agent.codeIdentity), " ", rel ? [h("a", { href: `#/release/${rel.measurement}` }, `release ${rel.version ?? ""}`), " ", state(rel.status)] : h("span", { class: "badge bad" }, "not a known release")] : "–"],
+      ["Measurement", agent.measurement ? [hash(agent.measurement), rel ? (rel.measurement === agent.measurement ? h("span", { class: "badge ok" }, "matches the signed descriptor") : h("span", { class: "badge bad" }, "differs from the descriptor")) : null] : "–"],
       ["Attested TEEs on that code", ranOn.length ? ranOn.map((t, i) => [i ? ", " : "", teeLink(t.id), t.sigValid ? "" : " (unverified)", t.current ? " (home)" : ""]) : "–"],
-      ["Planned with", tx.planner ? [tx.planner.model ?? "", tx.planner.snapshotSeq !== undefined ? h("span", { class: "muted" }, ` · against vault height ${fmt(tx.planner.snapshotSeq)}`) : ""] : "–"],
-      ["Origin", tx.origin ? `${tx.origin.by === "planner" ? "PAC picked the people" : "you named the people"} · message ${short(tx.origin.msg, 12)}` : "–"],
     ])),
-    ...section("Timeline", null, history.length ? h("ol", { class: "timeline" }, history.map((x, i) => h("li", { class: ENDED_OK.has(x.state) ? "done" : ENDED_BAD.has(x.state) ? "end" : i === history.length - 1 ? "" : "done" }, h("b", {}, x.state), " ", h("span", { class: "when" }, `${when(x.at)} · ${ago(x.at)}`)))) : h("p", { class: "empty" }, "No history yet.")),
-    ...(tx.open?.length ? section("Waiting on", "red", table(["Person", "For"], tx.open.map((o) => [who(o.user), o.kind === "approval" ? "an approval" : "an answer"]))) : []),
-    ...section("People", null, table(["Name", "Id", "Role", "Files used"], (tx.participants ?? []).map((p) => [who(p.user), h("span", { class: "mono" }, short(p.user, 12)), p.user === tx.initiator ? "asked" : "involved", String((tx.inputs ?? []).filter((x) => x.user === p.user).length)]))),
-    ...section("Files used", null, table(["Whose", "File", "Added by"], (tx.inputs ?? []).map((x) => [who(x.user), h("span", { class: "mono" }, x.file), x.addedBy ?? ""]), "No files yet.")),
-    ...section("Rounds", null, table(["Round", "Results sha256", "Redone for"], (s.rounds ?? []).map((r) => [h("td", { class: "num" }, String(r.n)), hash(r.resultsSha256, 16), (r.editsFrom ?? []).map((u, i) => [i ? ", " : "", who(u)])]), "No round has run yet.")),
-    ...(d.asks?.length ? section("PAC's asks to you", "red", d.asks.map((a) => h("div", {}, h("div", { class: "meta" }, state(a.status), a.body?.kind === "approval" ? "approval" : "question", a.createdAt ? time(a.createdAt) : null), h("div", { class: "text" }, a.text ?? (a.body?.question ?? ""))))) : []),
-    ...(d.result !== undefined ? section("Your result", "green", h("div", { class: "text" }, d.result)) : []),
-    ...((s.referencedBy?.length || tx.thread) ? section("Thread", null, sheet([tx.thread && ["Thread", hash(tx.thread)], s.referencedBy?.length && ["Built on by", s.referencedBy.map((r, i) => [i ? ", " : "", h("a", { href: `#/tx/${r.tx}` }, short(r.tx, 12)), " by ", r.by?.name ?? ""])]])) : []),
-    h("details", { class: "raw" }, h("summary", {}, "Raw, as pac tx show prints it"), h("pre", {}, JSON.stringify(s, null, 2))),
+    ...section("Turns", null, h("ol", { class: "timeline" }, (x.turns ?? []).map((t) => h("li", { class: ENDED_OK.has(t.status) ? "done" : ENDED_BAD.has(t.status) ? "end" : "" },
+      h("b", {}, `Turn ${t.n} · ${t.status}`), t.failure ? ` (${t.failure})` : "", " ", h("span", { class: "when" }, `${when(t.createdAt)} · updated ${ago(t.updatedAt)}`),
+      h("div", {}, who(t.by), ": ", h("span", { class: "muted" }, t.prompt)),
+      t.with?.length ? h("div", { class: "small muted" }, "named: ", t.with.map((u, i) => [i ? ", " : "", who(u)])) : null,
+      t.gathered ? h("div", { class: "small muted" }, `gathered ${t.gathered.in} of ${t.gathered.of}`) : null,
+      t.deadline ? h("div", { class: "small muted" }, `questions close ${when(t.deadline)}`) : null)))),
+    ...(d.results?.length ? section("Your results", "green", d.results.map((r) => h("div", {}, x.turns.length > 1 ? h("div", { class: "meta" }, `turn ${r.turn}`) : null, h("div", { class: "text" }, r.text || "(empty)")))) : []),
+    ...(d.asks?.length ? section("PAC's asks to you", "red", d.asks.map((a) => h("div", {}, h("div", { class: "meta" }, state(a.status), KIND[a.body?.kind] ?? a.body?.kind, `turn ${a.turn}`, a.createdAt ? time(a.createdAt) : null), h("div", { class: "text" }, a.text ?? a.body?.text ?? "")))) : []),
+    ...section("People", null, table(["Name", "Id", "Named in a turn"], (x.people ?? []).map((p) => [who(p.user), h("span", { class: "mono" }, short(p.user, 12)), (x.turns ?? []).some((t) => t.with?.includes(p.user) || t.by === p.user) ? "yes" : ""]), "No one else.")),
+    ...section("Files of yours PAC read", null, table(["File", "Version", "Turn"], (x.read ?? []).map((r) => [h("span", { class: "mono" }, r.file), String(r.version), String(r.turn)]), "None of your files.")),
+    h("details", { class: "raw" }, h("summary", {}, "Raw, as pac session prints it"), h("pre", {}, JSON.stringify(x, null, 2))),
   ];
 }
 
@@ -448,8 +456,8 @@ async function searchPage(raw) {
   const q = decodeURIComponent(raw).trim();
   const lower = q.toLowerCase();
   const hits = [];
-  if (/^tx_[A-Za-z0-9]+$/.test(q)) {
-    location.hash = `#/tx/${q}`;
+  if (/^s_[0-9a-f]{4,32}$/.test(q)) {
+    location.hash = `#/session/${q}`;
     return [];
   }
   if (/^\d+$/.test(q) && network.posts.some((p) => p.index === Number(q))) hits.push([`Bulletin post #${q}`, `#/post/${q}`]);
@@ -461,13 +469,13 @@ async function searchPage(raw) {
   }
   for (const p of network.profiles) if (lower.length >= 2 && p.name.toLowerCase().includes(lower) && !hits.some((x) => x[1] === `#/person/${p.id}`)) hits.push([`Person: ${p.name}`, `#/person/${p.id}`]);
   for (const r of network.deployment.releases) if (lower.length >= 2 && (r.codeIdentity.toLowerCase().includes(lower) || (r.version ?? "") === q)) hits.push([`Release ${r.version ?? ""} · ${short(r.codeIdentity, 18)}`, `#/release/${r.measurement}`]);
-  const txs = await loadMine();
-  for (const { tx } of txs ?? []) if (lower.length >= 3 && (tx.intent?.prompt ?? "").toLowerCase().includes(lower)) hits.push([`Your tx: ${short(tx.intent.prompt, 70)}`, `#/tx/${tx.id}`]);
+  const yours = await loadMine();
+  for (const x of yours ?? []) for (const t of x.turns ?? []) if (lower.length >= 3 && t.prompt.toLowerCase().includes(lower) && !hits.some((y) => y[1] === `#/session/${x.id}`)) hits.push([`Your session: ${short(t.prompt, 70)}`, `#/session/${x.id}`]);
   if (hits.length === 1) {
     location.hash = hits[0][1];
     return [];
   }
-  return [h("h1", {}, "Search"), h("p", { class: "lede" }, `${hits.length} result${hits.length === 1 ? "" : "s"} for “`, q, "”"), hits.length ? h("ul", {}, hits.map(([label, href]) => h("li", {}, h("a", { href }, label)))) : h("p", { class: "empty" }, mode.private ? "Nothing matches. Try a tx id, a hash prefix, a name or a version." : "Nothing public matches. A tx id opens only in your own local explorer.")];
+  return [h("h1", {}, "Search"), h("p", { class: "lede" }, `${hits.length} result${hits.length === 1 ? "" : "s"} for “`, q, "”"), hits.length ? h("ul", {}, hits.map(([label, href]) => h("li", {}, h("a", { href }, label)))) : h("p", { class: "empty" }, mode.private ? "Nothing matches. Try a session id, a hash prefix, a name or a version." : "Nothing public matches. A session id opens only in your own local explorer.")];
 }
 
 // ---- Routing ---------------------------------------------------------------
@@ -484,14 +492,14 @@ const ROUTES = [
   [/^\/person\/([0-9a-f]{64})$/, personPage, "#/people"],
   [/^\/bulletin$/, bulletinPage, "#/bulletin"],
   [/^\/post\/(\d+)$/, postPage, "#/bulletin"],
-  [/^\/txs$/, txsPage, "#/txs"],
-  [/^\/tx\/(tx_[A-Za-z0-9]+)$/, txPage, "#/txs"],
+  [/^\/sessions$/, sessionsPage, "#/sessions"],
+  [/^\/session\/(s_[0-9a-f]{4,32})$/, sessionPage, "#/sessions"],
   [/^\/search\/(.+)$/, searchPage, ""],
 ];
-const TABS = [["#/", "Network"], ["#/tees", "TEEs"], ["#/releases", "Releases"], ["#/programs", "Programs"], ["#/people", "People"], ["#/bulletin", "Bulletin"], ["#/txs", "Your txs"]];
+const TABS = [["#/", "Network"], ["#/tees", "TEEs"], ["#/releases", "Releases"], ["#/programs", "Programs"], ["#/people", "People"], ["#/bulletin", "Bulletin"], ["#/sessions", "Your sessions"]];
 
 function drawTabs(active) {
-  tabs.replaceChildren(...TABS.map(([href, label]) => h("a", { href, class: href === "#/txs" && mode.private ? "private" : "", "aria-current": href === active ? "page" : false }, label)));
+  tabs.replaceChildren(...TABS.map(([href, label]) => h("a", { href, class: href === "#/sessions" && mode.private ? "private" : "", "aria-current": href === active ? "page" : false }, label)));
 }
 
 let routing = 0;
@@ -535,7 +543,7 @@ async function boot() {
     modeEl.replaceChildren(h("i"), `local · ${me?.name ?? "you"}`);
     modeEl.className = "mode";
   } else {
-    modeEl.replaceChildren(h("i"), mode.mode === "local" ? "local · open the printed link to see your txs" : "public network");
+    modeEl.replaceChildren(h("i"), mode.mode === "local" ? "local · open the printed link to see your sessions" : "public network");
     modeEl.className = "mode public";
   }
   await route();

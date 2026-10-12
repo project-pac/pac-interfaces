@@ -1,4 +1,4 @@
-/** What `pac <cmd> --json` prints (PAC 0.5), only the fields interfaces read. */
+/** What `pac <cmd> --json` prints (PAC 0.6), only the fields interfaces read. */
 
 export type Env = Record<string, string | undefined>;
 
@@ -7,38 +7,79 @@ export interface Person {
   name: string;
 }
 
+/** Everyone on PAC, as `pac people` lists them. */
+export interface Member extends Person {
+  handle: string;
+}
+
+/** A question: something no file says. */
+export interface QuestionBody {
+  kind: "question";
+  text: string;
+  answer: "text" | "yes_no" | "choice" | "files";
+  choices?: string[];
+  everyone?: true;
+}
+
+/** Leave to read a file its owner keeps as "ask first". */
+export interface AccessBody {
+  kind: "access";
+  file: string;
+  name: string;
+  text?: string;
+}
+
 export interface Disclosure {
   to: string;
-  items: { source: string; quote: string; how: string; by: string[] }[];
-  overlaps?: { source: string; text: string }[];
+  items: { source: string; quote: string; how: string; by: ("agent" | "view")[]; index?: true }[];
+  overlaps?: { source: string; text: string; index?: true }[];
   edits?: { source: string; how: string }[];
 }
 
+/** What of the person's own material each other recipient's draft carries. */
 export interface ApprovalBody {
   kind: "approval";
-  round: number;
-  resultsSha256: string;
+  batch: string;
+  batchSha256: string;
   recipients: Person[];
-  yourFiles: { file: string; name: string; sha256?: string }[];
+  yourMaterial: { source: string; name: string; sha256: string; index?: true }[];
   disclosures: Disclosure[];
   summary?: string;
   whyIncluded?: string;
   unverifiedQuotes?: number;
-  revisedFor?: unknown[];
+  revisedFor?: Person[];
 }
 
-export interface RequestBody {
-  kind: "request";
-  question: string;
-  about?: string;
+/** A group, as a member sees it: what their submission consents to. */
+export interface GroupSpec {
+  name: string;
+  creator: Person;
+  run: { prompt: string };
+  ask: { text: string; answer: QuestionBody["answer"]; choices?: string[]; maxChars: number };
+  members: "open" | Person[];
+  reads: "submissions" | "members" | "anyone";
+  files: number;
+  to: string | Person[];
 }
+
+/** A group run's data ask: the same for every member. */
+export interface DataBody {
+  kind: "data";
+  group: string;
+  run: number;
+  spec: GroupSpec;
+}
+
+export type AskBody = QuestionBody | AccessBody | ApprovalBody | DataBody;
 
 export type AskStatus = "open" | "answered" | "expired" | "closed";
 
-export interface Ask<B = ApprovalBody | RequestBody> {
+export interface Ask<B extends AskBody = AskBody> {
   id: string;
-  tx: string;
-  step: string;
+  session: string;
+  turn: number;
+  /** The turn it's for, which every participant sees. */
+  prompt: { by: Person; text: string };
   status: AskStatus;
   body: B;
   /** PAC's own rendering, as a person should read it. */
@@ -47,19 +88,38 @@ export interface Ask<B = ApprovalBody | RequestBody> {
   expiresAt?: string;
 }
 
-export interface Tx {
-  id: string;
-  initiator: string;
-  participants: Person[];
-  intent?: { prompt?: string };
-  state: string;
+export type TurnStatus = "queued" | "gathering" | "running" | "waiting" | "reviewing" | "answered" | "failed" | "expired";
+
+export interface Turn {
+  n: number;
+  by: string;
+  prompt: string;
+  with: string[];
+  status: TurnStatus;
+  failure?: string;
+  deadline?: string;
+  gathered?: { in: number; of: number };
   createdAt: string;
-  updatedAt?: string;
+  updatedAt: string;
+  expiresAt?: string;
 }
 
-export interface TxEntry {
-  pointer: { tx: string; role: string; resultFile?: string; at: string };
-  tx: Tx;
+/** A session the person is in, as `pac sessions` and `pac session` print it. */
+export interface Session {
+  id: string;
+  you: string[];
+  people: Person[];
+  group?: { id: string; name: string; run: number };
+  turns: Turn[];
+  asks: { ask: string; turn: number; kind: AskBody["kind"]; status: AskStatus }[];
+  results: { turn: number; file: string; batch: string }[];
+  read?: { file: string; version: number; turn: number }[];
+  agent?: { codeIdentity: string; measurement: string };
+  /** The shortest id that pastes back. */
+  ref?: string;
+  needsYou?: boolean;
+  /** PAC's own rendering. */
+  text?: string;
 }
 
 export interface FileEntry {
@@ -68,7 +128,7 @@ export interface FileEntry {
   version: number;
   writtenAt: string;
   kind?: string;
-  meta?: { pac?: { result?: { tx?: string } } };
+  meta?: { pac?: { result?: unknown } };
 }
 
 export interface FileContent {
@@ -77,29 +137,46 @@ export interface FileContent {
   content: string;
 }
 
+/** `pac status`: whether PAC is ready, and what waits. */
+export interface Ready {
+  ready: boolean;
+  problems?: (string | { code: string })[];
+  asks?: unknown[];
+  sessions?: unknown[];
+}
+
+/** `pac system status`: everything about this home. */
 export interface Status {
   version: string;
   identity?: { user: string; name: string };
-  asks?: { open?: number; requests?: number; approvals?: number };
+  asks?: { open?: number };
   tee?: { current?: { granted?: boolean } };
   grant?: { state?: string };
   problems?: (string | { code: string })[];
 }
 
+/** What `prompt`, `reply` and `abort` print: sent, or with `--wait` PAC's receipt; a consent's preview without `--yes`. */
 export interface Sent {
+  status: "sent" | "accepted" | "rejected" | "preview";
   msg?: string;
+  session?: string;
   receipt?: { status: "accepted" | "rejected"; error?: string };
-  /** 0.5 prints the tx itself (`{id, …}`); older notes show a bare id. */
-  tx?: string | { id?: string };
+  pointer?: Session;
+  text?: string;
 }
-
-/** The tx id a `goal` started, whichever shape the CLI printed. */
-export const txIdOf = (sent: Sent): string | undefined => (typeof sent.tx === "string" ? sent.tx : typeof sent.tx?.id === "string" ? sent.tx.id : undefined);
 
 export interface WatchEvent {
   event: string;
   [key: string]: unknown;
 }
 
-export const isRequest = (a: Ask): a is Ask<RequestBody> => a.body.kind === "request";
+export const isQuestion = (a: Ask): a is Ask<QuestionBody> => a.body.kind === "question";
+export const isAccess = (a: Ask): a is Ask<AccessBody> => a.body.kind === "access";
 export const isApproval = (a: Ask): a is Ask<ApprovalBody> => a.body.kind === "approval";
+export const isData = (a: Ask): a is Ask<DataBody> => a.body.kind === "data";
+
+const ENDED: readonly TurnStatus[] = ["answered", "failed", "expired"];
+export const ended = (status: string): boolean => (ENDED as readonly string[]).includes(status);
+
+/** A session's latest turn, which says where it stands. */
+export const latest = (s: Session): Turn | undefined => s.turns.at(-1);

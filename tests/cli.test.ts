@@ -1,27 +1,29 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { PacError, stripFrontMatter } from "../pac/cli.ts";
 import { decides } from "../hooks/deny-pac-decide.ts";
-import { fakePac, request } from "./scene.ts";
+import { fakePac, question } from "./scene.ts";
 
 let close: (() => Promise<void>) | undefined;
 afterEach(async () => close?.());
 
 describe("pac CLI client", () => {
   it("runs the CLI with --json last, arguments before flags, PAC_HOME set", async () => {
-    const f = await fakePac({ asks: [request()] });
+    const f = await fakePac({ asks: [question()] });
     close = f.close;
     await f.pac.asks(true);
-    await f.pac.goal("How much is rent?");
-    await f.pac.decide("a_1", "edit", "drop the price");
+    await f.pac.prompt("How much is rent?");
+    await f.pac.prompt("-5% or more?", { with: ["Kate", "me"], only: true });
+    await f.pac.decide("a_q", "edit", "drop the price");
     expect(await f.calls()).toEqual([
       ["asks", "--all"],
-      ["goal", "How much is rent?", "--wait"],
-      ["decide", "a_1", "edit", "--text", "drop the price"],
+      ["prompt", "How much is rent?", "--wait"],
+      ["prompt", " -5% or more?", "--with=Kate,me", "--only", "--wait"],
+      ["reply", "a_q", "edit", "--text=drop the price", "--wait"],
     ]);
   });
 
   it("surfaces PAC's error code from the last stdout line", async () => {
-    const f = await fakePac({ fail: { status: { code: "not_set_up", exit: 2 } } });
+    const f = await fakePac({ fail: { "system status": { code: "not_set_up", exit: 2 } } });
     close = f.close;
     await expect(f.pac.status()).rejects.toMatchObject({ code: "not_set_up", exit: 2 });
     await expect(f.pac.status()).rejects.toBeInstanceOf(PacError);
@@ -54,6 +56,15 @@ describe("pac CLI client", () => {
 });
 
 describe("Claude Code hook", () => {
-  it.each(["pac decide a_1 yes", "~/.pac/bin/pac decide a_1 yes --json", '"$PAC" decide a_1 no', "${PAC} decide a yes", "cd x && /Users/me/.pac/bin/pac decide a yes", "pac --json decide a yes"])("blocks %s", (c) => expect(decides(c)).toBe(true));
-  it.each(["pac asks --json", "pac answer a_1 'I decide later'", "echo decide", "pac tx ls"])("allows %s", (c) => expect(decides(c)).toBe(false));
+  it.each([
+    "pac reply a_1 yes",
+    "~/.pac/bin/pac reply a_1 yes --yes --json",
+    '"$PAC" reply a_1 no',
+    "${PAC} reply a edit --text 'less'",
+    "cd x && /Users/me/.pac/bin/pac reply a yes",
+    "pac --json reply a yes",
+    "pac reply a_data --text 'shipped' --yes",
+    "pac decide a_1 yes",
+  ])("blocks %s", (c) => expect(decides(c)).toBe(true));
+  it.each(["pac asks --json", "pac reply a_1 'I decide later'", "pac reply a_1 --choice yes", "pac reply a_1 --text no", "pac reply a_1 --skip", "echo yes", "pac sessions"])("allows %s", (c) => expect(decides(c)).toBe(false));
 });

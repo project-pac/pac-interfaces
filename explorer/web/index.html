@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PAC Explorer</title>
+    <meta name="description" content="PAC's network, as anyone can verify it: TEEs and their attestations, releases, programs, people, and the bulletin." />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <header class="bar">
+      <a class="brand" href="#/" aria-label="PAC Explorer home">
+        <svg class="mark" viewBox="0 0 32 32" aria-hidden="true"><rect x="0" y="5" width="20" height="6" fill="#3366cc" /><rect x="0" y="13" width="20" height="6" fill="#14866d" /><rect x="0" y="21" width="20" height="6" fill="#d73333" /><rect x="20" y="0" width="12" height="32" fill="#ffffff" /></svg>
+        <span>PAC <b>Explorer</b></span>
+      </a>
+      <form class="search" id="search" role="search">
+        <input id="q" type="search" placeholder="Search a tx, TEE, release, program, person or hash" aria-label="Search" autocomplete="off" spellcheck="false" />
+      </form>
+      <span class="mode" id="mode"></span>
+    </header>
+    <nav class="tabs" id="tabs" aria-label="Sections"></nav>
+    <main id="main" tabindex="-1"><p class="loading">Reading the network…</p></main>
+    <footer class="foot">
+      <span>Every signature on this page is checked again here, from public data: the deployment descriptor, the bulletin and the vault.</span>
+      <a href="https://projectpac.net">projectpac.net</a>
+      <a href="https://docs.projectpac.net">docs</a>
+      <a href="https://github.com/project-pac/pac-interfaces/tree/main/explorer">source</a>
+    </footer>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

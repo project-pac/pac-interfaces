@@ -18,6 +18,9 @@ const USAGE = `pac-interfaces <command>
                          the connector as a launchd agent, started at login
   relay                  the shared PAC Slack app's relay: SLACK_BOT_TOKEN, SLACK_APP_TOKEN,
                          PORT, PAC_RELAY_URL (public wss URL), PAC_RELAY_DATA (where links are kept)
+  explorer [--port <n>]  PAC's explorer on this machine (127.0.0.1): the public network, and
+                         every detail of the txs you're in, through your own pac
+  explorer --public      the hosted explorer: the public network only (PORT, PAC_EXPLORER_DATA)
   install <claude-code|hermes>
                          prints how to wire the skill, hook and MCP server into a host
 `;
@@ -127,6 +130,36 @@ async function main(argv: string[]): Promise<number> {
       const { createPacServer } = await import("../mcp/server.ts");
       const pac = new Pac();
       await createPacServer({ version: "0.1.0", pac: () => pac }).connect(new StdioServerTransport());
+      return -1;
+    }
+    case "explorer": {
+      const { Activity, PublicSource } = await import("../explorer/public.ts");
+      const { startExplorer } = await import("../explorer/server.ts");
+      const hosted = argv.includes("--public");
+      const flag = argv.indexOf("--port");
+      const port = flag > 0 ? Number(argv[flag + 1]) : hosted ? Number(process.env.PORT ?? 8080) : 7979;
+      if (!Number.isInteger(port) || port < 0 || port > 65535) {
+        console.error("--port takes a number");
+        return 2;
+      }
+      const data = process.env.PAC_EXPLORER_DATA?.trim();
+      const activity = new Activity(hosted && data ? join(data, "activity.json") : undefined);
+      await activity.load();
+      const log = (event: string, extra: Record<string, unknown> = {}) => console.log(JSON.stringify({ at: new Date().toISOString(), event, ...extra }));
+      const explorer = await startExplorer({
+        mode: hosted ? "public" : "local",
+        host: hosted ? "0.0.0.0" : "127.0.0.1",
+        port,
+        source: new PublicSource(),
+        activity,
+        ...(hosted ? {} : { pac: new Pac() }),
+        log,
+      });
+      if (hosted) {
+        log("explorer_started", { port: explorer.port });
+      } else {
+        console.error(`PAC Explorer, with your txs from ${pacHome()}. Open (this link signs your browser in):\n\n  ${explorer.url}\n\nOnly this machine can reach it. Ctrl-C stops it.`);
+      }
       return -1;
     }
     case "relay": {

@@ -43,6 +43,8 @@ export interface Scene {
   goal?: unknown;
   fail?: Record<string, { code: string; exit?: number }>;
   watch?: unknown[];
+  /** `tx show <id>` output by id; null makes it fail. */
+  txShow?: Record<string, unknown>;
 }
 
 export const STATUS = { version: "0.5.0", identity: { user: ME, name: "Me" }, grant: { state: "granted" }, asks: { open: 2, requests: 1, approvals: 1 }, problems: [] };

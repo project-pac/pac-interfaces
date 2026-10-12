@@ -25,12 +25,18 @@ if (fail) {
 switch (key) {
   case "status":
     out(scene.status);
-  case "asks":
-    out(a.includes("--all") ? scene.asks : scene.asks.filter((x: { status: string }) => x.status === "open"));
+  case "asks": {
+    const tx = a.includes("--tx") ? a[a.indexOf("--tx") + 1] : undefined;
+    const asks = (a.includes("--all") ? scene.asks : scene.asks.filter((x: { status: string }) => x.status === "open")).filter((x: { tx: string }) => !tx || x.tx === tx);
+    out(asks);
+  }
   case "tx ls":
     out(scene.txs ?? []);
   case "tx show":
-    out({ id: a[2], rounds: [] });
+    if (scene.txShow?.[a[2]!] === null) {
+      out({ error: "no such tx", code: "unknown_tx" }, 2);
+    }
+    out(scene.txShow?.[a[2]!] ?? { id: a[2], rounds: [] });
   case "files ls":
     out(scene.files ?? []);
   case "files cat":

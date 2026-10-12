@@ -146,19 +146,26 @@ async function main(argv: string[]): Promise<number> {
       const activity = new Activity(hosted && data ? join(data, "activity.json") : undefined);
       await activity.load();
       const log = (event: string, extra: Record<string, unknown> = {}) => console.log(JSON.stringify({ at: new Date().toISOString(), event, ...extra }));
-      const explorer = await startExplorer({
-        mode: hosted ? "public" : "local",
-        host: hosted ? "0.0.0.0" : "127.0.0.1",
-        port,
-        source: new PublicSource(),
-        activity,
-        ...(hosted ? {} : { pac: new Pac() }),
-        log,
-      });
+      const source = new PublicSource();
+      const pac = hosted ? undefined : new Pac();
+      const start = (at: number) => startExplorer({ mode: hosted ? "public" : "local", host: hosted ? "0.0.0.0" : "127.0.0.1", port: at, source, activity, ...(pac ? { pac } : {}), log });
+      const busy = (error: unknown) => (error as NodeJS.ErrnoException).code === "EADDRINUSE";
+      let explorer: Awaited<ReturnType<typeof start>> | undefined;
+      // A busy default port (another explorer, say) moves to the next free one; a port asked for is kept or refused.
+      for (let at = port; !explorer; at++) {
+        try {
+          explorer = await start(at);
+        } catch (error) {
+          if (!busy(error) || flag > 0 || hosted || at >= port + 20) {
+            console.error(busy(error) ? `Port ${at} is in use (another explorer?). Pick another: node bin/main.ts explorer --port <n>` : `The explorer didn't start: ${codeOf(error)}`);
+            return 1;
+          }
+        }
+      }
       if (hosted) {
         log("explorer_started", { port: explorer.port });
       } else {
-        console.error(`PAC Explorer, with your txs from ${pacHome()}. Open (this link signs your browser in):\n\n  ${explorer.url}\n\nOnly this machine can reach it. Ctrl-C stops it.`);
+        console.error(`PAC Explorer, with your sessions from ${pacHome()}. Open (this link signs your browser in):\n\n  ${explorer.url}\n\nOnly this machine can reach it. Ctrl-C stops it.`);
       }
       return -1;
     }

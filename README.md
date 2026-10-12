@@ -13,6 +13,7 @@ of the **`pac` CLI** the user already has installed (`pac <cmd> --json`,
 | MCP server (stdio), same PAC as tools | `mcp/` | `node bin/main.ts mcp` |
 | Slack, shared app: anyone in the workspace links their own PAC | `relay/` + `slack/connector.ts` | `node bin/main.ts relay` (hosted) · `node bin/main.ts slack connect <code>` (each person) |
 | Slack, an app of your own, for the owner of one PAC home | `slack/` | `node bin/main.ts slack` |
+| Explorer: the network anyone can verify, and your own sessions | `explorer/` | `node bin/main.ts explorer [--public]` |
 | Claude companion | `claude-companion/` | moving here from `pac-agent@claude-companion` |
 
 Shared: `pac/cli.ts`, a typed wrapper over `pac … --json` (exit codes,

@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Pac } from "../pac/cli.ts";
-import type { AccessBody, ApprovalBody, Ask, DataBody, Member, QuestionBody, Session } from "../pac/types.ts";
+import type { AccessBody, ApprovalBody, Ask, DataBody, Group, Listing, Member, QuestionBody, Session } from "../pac/types.ts";
 
 export const ME = "u_me";
 export const BOB = "u_bob";
@@ -84,6 +84,19 @@ export const data = (id = "a_data", status: Ask["status"] = "open", answer: Ques
   },
 });
 
+/** A group: the weekly sync's spec, as `data()`'s ask carries it, with my part in it. */
+export const group = (you: Group["you"] = "member", extra: Partial<Group> = {}): Group => ({
+  id: "g_1234abcd1234abcd1234abcd1234abcd",
+  ref: "g_1234",
+  spec: data().body.spec,
+  status: "open",
+  you,
+  runs: [{ n: 1, session: S1, deadline: new Date(Date.now() + 86_400_000).toISOString(), createdAt: "2026-10-12T04:00:00Z" }],
+  ...extra,
+});
+
+export const listing = (extra: Partial<Listing> = {}): Listing => ({ group: "g_5678ef005678ef005678ef005678ef00", ref: "g_5678", spec: { ...data().body.spec, name: "Open book club", members: "open", to: "submitters" }, ...extra });
+
 export interface Scene {
   status?: unknown;
   ready?: unknown;
@@ -93,6 +106,8 @@ export interface Scene {
   cat?: Record<string, unknown>;
   prompt?: unknown;
   people?: Member[];
+  groups?: Group[];
+  openGroups?: Listing[];
   fail?: Record<string, { code: string; exit?: number }>;
   watch?: unknown[];
 }

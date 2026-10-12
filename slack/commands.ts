@@ -1,5 +1,6 @@
 import { codeOf, NAME, stripFrontMatter, type Pac } from "../pac/cli.ts";
 import { ended, latest, type Sent, type Session } from "../pac/types.ts";
+import { groupCommand } from "./groups.ts";
 import { chunk, esc, type Block } from "./render.ts";
 
 /**
@@ -18,6 +19,7 @@ export const HELP = [
   "`/pac with Dhrumil,Kate <question>`: involve these people too · `/pac only Dhrumil <question>`: no one else (`me` is you)",
   "`/pac sessions` · `/pac show <session>` · `/pac reply <session> <text>` (or reply in an answer's Slack thread)",
   "`/pac abort <session>`: end a session's current turn; nothing is released",
+  "`/pac groups` · `/pac groups open` · `/pac group <group>` · `/pac group new` (a form) · `/pac group join|leave|close <group>` · `/pac group run <group> [now]`",
   "`/pac files` · `/pac file <name or id>` · `/pac remember <name.md>` (then the text, or a form opens)",
   "`/pac people` · `/pac status` · `/pac verify` · `/pac trust` · `/pac asks`",
   "`/pac link` · `/pac unlink` (shared PAC app): connect this Slack account to the PAC on your Mac, or stop",
@@ -280,6 +282,9 @@ export async function command(pac: Pac, input: string, resync: () => Promise<voi
       await pac.put(n, content);
       return say(`:floppy_disk: Saved \`${esc(n)}\` in PAC. The same name again makes a new version.`);
     }
+    case "groups":
+    case "group":
+      return groupCommand(pac, word, rest);
     case "link":
     case "unlink":
       // The shared app's relay answers these before they reach a connector.

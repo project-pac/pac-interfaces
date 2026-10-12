@@ -52,6 +52,26 @@ switch (key) {
   }
   case "people":
     out(scene.people ?? []);
+  case "groups":
+    out(flag("open") ? (scene.openGroups ?? []) : (scene.groups ?? []));
+  case "group": {
+    const sub = a[1];
+    if (sub === "new") {
+      const name = flagValue("name");
+      out(flag("yes") ? { status: "accepted", msg: "m_g", group: "g_9999aaaa", session: "s_9999aaaa", receipt: { status: "accepted" } } : { status: "preview", text: `a group, as every member sees it before they submit:\n  group: ${name}`, body: { kind: "group" } });
+    }
+    const ref = a[2]!;
+    const mine = (scene.groups ?? []).filter((g: { id: string }) => g.id.startsWith(ref));
+    const listed = (scene.openGroups ?? []).filter((g: { group: string }) => g.group.startsWith(ref));
+    const found = mine[0] ?? listed[0];
+    if (!found) {
+      out({ error: "no such group", code: "unknown_group" }, 2);
+    }
+    if (sub === "show") {
+      out(found);
+    }
+    out({ status: "accepted", msg: "m_g", group: ref, receipt: { status: "accepted" } });
+  }
   case "files ls":
     out(scene.files ?? []);
   case "files cat":

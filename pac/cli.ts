@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
-import type { Ask, Env, FileContent, FileEntry, Member, Ready, Sent, Session, Status, WatchEvent } from "./types.ts";
+import type { Ask, Env, FileContent, FileEntry, Group, GroupDraft, Listing, Member, Ready, Sent, Session, Status, WatchEvent } from "./types.ts";
 
 /**
  * PAC through its CLI, `pac <cmd> … --json`: the interface PAC documents for
@@ -203,6 +203,49 @@ export class Pac {
    */
   submit(ask: string, answer: { text: string } | { choice: string }): Promise<Sent> {
     return this.run(["reply", ask, "text" in answer ? `--text=${answer.text}` : `--choice=${answer.choice}`, "--yes", "--wait"]);
+  }
+
+  /** Your groups, or with `open` the open groups anyone on PAC may join. */
+  groups(open = false): Promise<Group[] | Listing[]> {
+    return this.run(["groups", ...(open ? ["--open"] : [])]);
+  }
+
+  /** One group, yours or an open one, by id or the start of one. */
+  group(ref: string): Promise<Group | Listing> {
+    return this.run(["group", "show", ref]);
+  }
+
+  /** Join an open group, or one that invited you which you left; leave one; as its creator, close it. */
+  groupAct(act: "join" | "leave" | "close", ref: string): Promise<Sent> {
+    return this.run(["group", act, ref, "--wait"]);
+  }
+
+  /** As its creator: run the gathering run on what's in (`now`), or start the next run. */
+  runGroup(ref: string, now: boolean): Promise<Sent> {
+    return this.run(["group", "run", ref, ...(now ? ["--now"] : []), "--wait"]);
+  }
+
+  /**
+   * Make a group. Without `yes` it only previews it, as members will see it
+   * (`status: "preview"`); with `yes` it sends it. The creator's own act.
+   */
+  newGroup(d: GroupDraft, yes: boolean): Promise<Sent> {
+    return this.run([
+      "group",
+      "new",
+      `--name=${d.name}`,
+      `--ask=${d.ask}`,
+      `--answer=${d.answer}`,
+      ...(d.choices ?? []).map((c) => `--choice=${c}`),
+      `--prompt=${d.prompt}`,
+      ...(d.invite?.length ? [`--invite=${d.invite.join(",")}`] : []),
+      ...(d.open ? ["--open"] : []),
+      ...(d.to ? [`--to=${d.to}`] : []),
+      ...(d.by ? [`--by=${d.by}`] : []),
+      ...(d.pacMayRead ? ["--pac-may-read"] : []),
+      ...(yes ? ["--yes"] : []),
+      "--wait",
+    ]);
   }
 
   /** Saves a note as one of the user's files; the same name makes a new version. */

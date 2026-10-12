@@ -72,6 +72,42 @@ export interface DataBody {
 
 export type AskBody = QuestionBody | AccessBody | ApprovalBody | DataBody;
 
+/** A group the person is in (or made, or left), as `pac groups` and `pac group show` print it. */
+export interface Group {
+  id: string;
+  spec: GroupSpec;
+  status: "open" | "closed";
+  you: "creator" | "member" | "left";
+  runs: { n: number; session: string; deadline: string; now?: true; createdAt: string }[];
+  ref?: string;
+  needsYou?: boolean;
+  /** PAC's own rendering. */
+  text?: string;
+}
+
+/** An open group anyone on PAC may join, as `pac groups --open` lists it. */
+export interface Listing {
+  group: string;
+  spec: GroupSpec;
+  gathering?: { run: number; deadline: string };
+  ref?: string;
+  text?: string;
+}
+
+/** What `pac group new` takes: everything a member sees before they submit. */
+export interface GroupDraft {
+  name: string;
+  prompt: string;
+  ask: string;
+  answer: QuestionBody["answer"];
+  choices?: string[];
+  invite?: string[];
+  open?: boolean;
+  to?: "members" | "submitters" | "each" | "me" | "pac";
+  by?: string;
+  pacMayRead?: boolean;
+}
+
 export type AskStatus = "open" | "answered" | "expired" | "closed";
 
 export interface Ask<B extends AskBody = AskBody> {

@@ -1,6 +1,7 @@
 import { codeOf, NAME, type Pac } from "../pac/cli.ts";
 import { ACT, command, MODAL, replyModal, show, type Reply } from "./commands.ts";
 import { access, answerQuestion, decide, submitData, type Outcome } from "./decide.ts";
+import { draftOf, Drafts, GACT, GMODAL, groupSent, groupShow, previewBlocks, refusal } from "./groups.ts";
 import type { Message, OwnerEvent, SlackReply, ViewAck } from "./events.ts";
 import { ACTION, VIEW, askBlocks, askSummary, esc, parseValue, resolved, textModal, type Block } from "./render.ts";
 import { loadState, saveState, syncOnce, type SyncState } from "./sync.ts";
@@ -33,7 +34,7 @@ export const log: Log = (event, extra = {}) => console.error(JSON.stringify({ at
 
 export const NOT_OWNER = "This PAC bot is linked to one person's PAC, and it isn't you.";
 
-const RESERVED = ["help", "status", "asks", "sessions", "threads", "show", "abort", "people", "contacts", "files", "file", "remember", "verify", "trust", "link", "unlink"];
+const RESERVED = ["help", "status", "asks", "sessions", "threads", "show", "abort", "people", "contacts", "groups", "group", "files", "file", "remember", "verify", "trust", "link", "unlink"];
 
 /** Whether a `/pac` line asks PAC something (kept as a record in the DM when typed elsewhere). */
 export function isQuestion(text: string): boolean {
@@ -75,6 +76,7 @@ export function createOwner(o: OwnerOptions): Owner {
   const blocksOf = (reply: Reply): Block[] => reply.blocks ?? resolved(reply.text);
   const failed = (error: unknown) => `PAC: \`${esc(codeOf(error))}\``;
   const aside = (text: string): SlackReply => ({ response_type: "ephemeral", replace_original: false, text });
+  const drafts = new Drafts();
 
   // --- Sync: one pass at a time, triggered by `pac watch` and a slow poll ----
   let state: SyncState = { asks: {}, answers: {}, threads: {}, primed: false };
@@ -189,6 +191,36 @@ export function createOwner(o: OwnerOptions): Owner {
           return form(VIEW.submit, "Submit to the group", "Your submission (the whole group, as shown, sees it run)");
         case ACTION.submitChoice:
           return value?.c !== undefined ? done(await submitData(pac, value, { choice: value.c })) : undefined;
+        // Groups: show, join, leave, run, close (Slack's own confirm first for leave and close), create a previewed draft.
+        case GACT.show: {
+          const reply = await groupShow(pac, e.value ?? "");
+          return io.respond({ ...aside(reply.text), blocks: blocksOf(reply) });
+        }
+        case GACT.join:
+        case GACT.leave:
+        case GACT.close: {
+          const act = e.action === GACT.join ? "join" : e.action === GACT.leave ? "leave" : "close";
+          const said = groupSent(await pac.groupAct(act, e.value ?? ""), { join: "Joined. A run still gathering asks you too", leave: "Left the group", close: "Closed: no more runs" }[act]);
+          return io.respond(aside(said));
+        }
+        case GACT.runNow:
+        case GACT.runNext: {
+          const now = e.action === GACT.runNow;
+          return io.respond(aside(groupSent(await pac.runGroup(e.value ?? "", now), now ? "Running on what's in" : "The next run is gathering: members get its ask")));
+        }
+        case GACT.create:
+        case GACT.cancel: {
+          const draft = drafts.take(e.value ?? "");
+          const said = !draft
+            ? "That draft has expired. Start again with `/pac group new`."
+            : e.action === GACT.cancel
+              ? "Not made."
+              : groupSent(await pac.newGroup(draft, true), `Made *${esc(draft.name)}*: run 1 is gathering, and every member gets its ask`);
+          if (e.channel && e.ts) {
+            await port.update(e.channel, e.ts, { text: said, blocks: resolved(said) });
+          }
+          return;
+        }
         // Sessions: Show, Reply (modal), Abort (Slack's own confirm dialog first).
         case ACT.show: {
           const reply = await show(pac, e.value ?? "");
@@ -223,6 +255,22 @@ export function createOwner(o: OwnerOptions): Owner {
         await port.post({ text: `Saved ${name} in PAC`, blocks: resolved(`:floppy_disk: Saved \`${esc(name)}\` in PAC.`) });
       } catch (error) {
         await port.post({ text: `PAC: ${codeOf(error)}`, blocks: resolved(failed(error)) });
+      }
+      return;
+    }
+    if (e.callback === GMODAL.create) {
+      const d = draftOf(e.values);
+      if ("errors" in d) {
+        await io.ack({ response_action: "errors", errors: d.errors });
+        return;
+      }
+      await io.ack();
+      try {
+        // PAC's own preview, exactly as members will see it; made only on Create.
+        const preview = await pac.newGroup(d.draft, false);
+        await port.post({ text: `Make the group ${d.draft.name}?`, blocks: previewBlocks(drafts.put(d.draft), preview.text ?? d.draft.name) });
+      } catch (error) {
+        await port.post({ text: "PAC couldn't make that group", blocks: resolved(`PAC couldn't make that group: ${refusal(error)}`) });
       }
       return;
     }

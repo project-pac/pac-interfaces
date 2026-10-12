@@ -29,7 +29,8 @@ export type OwnerEvent =
 type RawCommand = { user_id: string; text: string; channel_id: string };
 type RawMessage = { channel_type?: string; user?: string; text?: string; subtype?: string; bot_id?: string; thread_ts?: string };
 type RawAction = { user: { id: string }; actions: { action_id: string; value?: string }[]; channel?: { id: string }; message?: { ts: string } };
-type RawView = { callback_id: string; private_metadata: string; state: { values: Record<string, Record<string, { value?: string | null }>> } };
+type RawInput = { value?: string | null; selected_option?: { value: string } | null; selected_options?: { value: string }[] };
+type RawView = { callback_id: string; private_metadata: string; state: { values: Record<string, Record<string, RawInput>> } };
 
 export const commandEvent = (c: RawCommand): OwnerEvent => ({ kind: "command", user: c.user_id, text: c.text ?? "", channel: c.channel_id });
 
@@ -51,12 +52,13 @@ export function actionEvent(raw: unknown): OwnerEvent | undefined {
   return { kind: "action", user: b.user.id, action: a.action_id, ...(a.value !== undefined ? { value: a.value } : {}), ...(b.channel?.id ? { channel: b.channel.id } : {}), ...(b.message?.ts ? { ts: b.message.ts } : {}) };
 }
 
-/** A submitted form: each input block's text, by block id (every input here uses action id `value`). */
+/** A submitted form: each input block's value, by block id: its text, its selected option, or its ticked boxes joined by commas. */
 export function viewEvent(user: string, raw: unknown): OwnerEvent {
   const v = raw as RawView;
   const values: Record<string, string> = {};
   for (const [block, inputs] of Object.entries(v.state?.values ?? {})) {
-    values[block] = inputs.value?.value ?? "";
+    const i = inputs.value ?? Object.values(inputs)[0];
+    values[block] = i?.value ?? i?.selected_option?.value ?? (i?.selected_options ?? []).map((o) => o.value).join(",");
   }
   return { kind: "view", user, callback: v.callback_id, values, meta: v.private_metadata ?? "" };
 }

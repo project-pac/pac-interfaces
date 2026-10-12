@@ -1,5 +1,6 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { createPublicKey, verify } from "node:crypto";
 import { sha256Hex, verifySig } from "./verify.ts";
 
 /**
@@ -11,6 +12,12 @@ import { sha256Hex, verifySig } from "./verify.ts";
  */
 
 export const DESCRIPTOR_URL = "https://cdn.projectpac.net/deployment.json";
+
+/** Where the PAC app's releases are published: `latest.json`, and each version's signed `SHA256SUMS`. */
+export const RELEASES_URL = "https://cdn.projectpac.net/releases";
+
+/** The Ed25519 key, SPKI in base64, that `pac` pins to check its own upgrades (its `release.json`). */
+export const RELEASE_KEY = "MCowBQYDK2VwAyEApvNzfhlj468FFYgiWKt0o9Damp5t3xazAB18HIJn3EU=";
 
 export interface Release {
   measurement: string;
@@ -111,6 +118,37 @@ export interface Program {
   status?: string;
 }
 
+/** One file of an app release: a platform's tarball. */
+export interface AppFile {
+  /** `cli` (the `pac` tarball), `app` (the Mac app: installer or update), or an update's `signature`. */
+  kind: "cli" | "app" | "signature" | "other";
+  platform: string;
+  name: string;
+  sha256: string;
+  size?: number;
+}
+
+/** A release of the PAC app (the `pac` people install), its checksums signed by the release key. */
+export interface AppRelease {
+  version: string;
+  latest: boolean;
+  /** When its SHA256SUMS was published. */
+  publishedAt?: string;
+  /** Its SHA256SUMS signed by the key `pac` pins. */
+  sigValid: boolean;
+  sumsSha256: string;
+  files: AppFile[];
+  /** The latest's: whether latest.json names exactly the files its signed SHA256SUMS does. */
+  manifestMatches?: boolean;
+}
+
+export interface App {
+  /** The release key, by the sha256 of its SPKI. */
+  key: string;
+  latest?: string;
+  releases: AppRelease[];
+}
+
 export interface Network {
   at: string;
   /** Accepted writes in the vault so far: PAC's block height, as near as it has one. */
@@ -120,6 +158,7 @@ export interface Network {
   tees: Tee[];
   profiles: Profile[];
   programs: Program[];
+  app: App;
   /** What failed to load or verify, by code. */
   problems: string[];
 }
@@ -205,9 +244,121 @@ function programRef(p: unknown): string {
   return `${name || "program"}${str(o.sha256) ? `@${str(o.sha256)!.slice(0, 12)}` : ""}`;
 }
 
-/** Everything public, read once, every signature checked. */
-export async function loadNetwork(fetch: Fetch, descriptorUrl = DESCRIPTOR_URL): Promise<Network> {
+const semver = (v: string) => v.split(".").map((n) => Number(n));
+const newer = (a: string, b: string) => {
+  const [x, y] = [semver(a), semver(b)];
+  for (let i = 0; i < 3; i++) {
+    if ((x[i] ?? 0) !== (y[i] ?? 0)) {
+      return (x[i] ?? 0) - (y[i] ?? 0);
+    }
+  }
+  return 0;
+};
+
+/** A release file, by its name: the CLI's tarballs, and earlier releases' Mac app (installer, update, update signature). */
+function fileOf(name: string, sha256: string): AppFile {
+  const cli = name.match(/^pac-[\d.]+-(.+)\.tar\.gz$/);
+  if (cli) {
+    return { kind: "cli", platform: cli[1]!, name, sha256 };
+  }
+  const dmg = name.match(/^PAC-[\d.]+-(.+)\.dmg$/);
+  if (dmg) {
+    return { kind: "app", platform: `macOS ${dmg[1]} installer`, name, sha256 };
+  }
+  const update = name.match(/^PAC-[\d.]+-darwin-(.+)\.app\.tar\.gz(\.sig)?$/);
+  if (update) {
+    return { kind: update[2] ? "signature" : "app", platform: `macOS ${update[1]} ${update[2] ? "update signature" : "update"}`, name, sha256 };
+  }
+  return { kind: "other", platform: name, name, sha256 };
+}
+
+/** Versions found or not, by `<base>|<version>`: a published release never changes; a miss is asked again within the hour. */
+const releases = new Map<string, { release: AppRelease | null; at: number }>();
+
+async function appRelease(fetch: Fetch, base: string, version: string, releaseKey: string): Promise<AppRelease | null> {
+  const key = `${base}|${releaseKey}|${version}`;
+  const known = releases.get(key);
+  if (known && (known.release || Date.now() - known.at < 3_600_000)) {
+    return known.release;
+  }
+  const r = await fetch(`${base}/${version}/SHA256SUMS`);
+  if (!r.ok) {
+    releases.set(key, { release: null, at: Date.now() });
+    return null;
+  }
+  const sums = Buffer.from(await r.arrayBuffer());
+  const sig = await fetch(`${base}/${version}/SHA256SUMS.sig`).then((x) => (x.ok ? x.text() : ""), () => "");
+  let sigValid = false;
+  try {
+    sigValid = verify(null, sums, createPublicKey({ key: Buffer.from(releaseKey, "base64"), format: "der", type: "spki" }), Buffer.from(sig.trim(), "base64"));
+  } catch {
+    sigValid = false;
+  }
+  const files = sums
+    .toString("utf8")
+    .split("\n")
+    .map((line) => line.trim().split(/\s+/))
+    .filter((parts): parts is [string, string] => parts.length === 2 && /^[0-9a-f]{64}$/.test(parts[0]!))
+    .map(([sha256, name]) => fileOf(name, sha256));
+  const modified = r.headers.get("last-modified");
+  const release: AppRelease = { version, latest: false, sigValid, sumsSha256: sha256Hex(sums), files, ...(modified ? { publishedAt: new Date(modified).toISOString() } : {}) };
+  releases.set(key, { release, at: Date.now() });
+  return release;
+}
+
+/** Every version the CDN keeps, up to the latest: it lists none, so each plausible one is looked for. */
+function candidates(latest: string): string[] {
+  const [major = 0, minor = 0, patch = 0] = semver(latest);
+  const out: string[] = [];
+  for (let x = 0; x <= major; x++) {
+    for (let y = 0; y <= (x < major ? 9 : minor); y++) {
+      for (let z = 0; z <= (x === major && y === minor ? patch : 4); z++) {
+        out.push(`${x}.${y}.${z}`);
+      }
+    }
+  }
+  return out;
+}
+
+/** The PAC app's releases: the latest from latest.json, each version's SHA256SUMS checked against the key `pac` pins. */
+export async function loadApp(fetch: Fetch, base = RELEASES_URL, releaseKey = RELEASE_KEY): Promise<App & { problems: string[] }> {
+  const key = sha256Hex(Buffer.from(releaseKey, "base64"));
   const problems: string[] = [];
+  const latest = await json(fetch, `${base}/latest.json`).catch(() => undefined);
+  const version = str(latest?.version);
+  if (!version || !/^\d+\.\d+\.\d+$/.test(version)) {
+    return { key, releases: [], problems: ["app_latest_unreadable"] };
+  }
+  const found = (await Promise.all(candidates(version).map((v) => appRelease(fetch, base, v, releaseKey).catch(() => null)))).filter((r): r is AppRelease => r !== null);
+  const out = found.map((r) => ({ ...r, files: r.files.map((f) => ({ ...f })) })).sort((a, b) => newer(b.version, a.version));
+  const top = out.find((r) => r.version === version);
+  if (top) {
+    top.latest = true;
+    const listed = (latest?.files ?? {}) as Record<string, { path?: string; sha256?: string; size?: number }>;
+    for (const f of top.files) {
+      const m = listed[f.platform];
+      if (typeof m?.size === "number") {
+        f.size = m.size;
+      }
+    }
+    const cli = top.files.filter((f) => f.kind === "cli");
+    top.manifestMatches = Object.keys(listed).length === cli.length && cli.every((f) => listed[f.platform]?.sha256 === f.sha256);
+  }
+  for (const r of out) {
+    if (!r.sigValid) {
+      problems.push(`app_signature_${r.version}`);
+    }
+  }
+  if (top && !top.manifestMatches) {
+    problems.push("app_manifest_mismatch");
+  }
+  return { key, latest: version, releases: out, problems };
+}
+
+/** Everything public, read once, every signature checked. */
+export async function loadNetwork(fetch: Fetch, descriptorUrl = DESCRIPTOR_URL, releasesUrl = RELEASES_URL, releaseKey = RELEASE_KEY): Promise<Network> {
+  const problems: string[] = [];
+  const appLoad = loadApp(fetch, releasesUrl, releaseKey);
   const d = await json(fetch, descriptorUrl);
   const { sig: dsig, ...unsigned } = d;
   const deployment: Deployment = {
@@ -365,8 +516,11 @@ export async function loadNetwork(fetch: Fetch, descriptorUrl = DESCRIPTOR_URL):
     }
   }
 
+  const { problems: appProblems, ...app } = await appLoad;
+  problems.push(...appProblems);
   return {
     at: new Date().toISOString(),
+    app,
     height,
     deployment,
     posts,
@@ -386,9 +540,12 @@ export class PublicSource {
   #at = 0;
   #pending: Promise<Network> | undefined;
 
-  constructor(o: { fetch?: Fetch; descriptorUrl?: string; ttlMs?: number } = {}) {
+  readonly #releases: string;
+
+  constructor(o: { fetch?: Fetch; descriptorUrl?: string; releasesUrl?: string; ttlMs?: number } = {}) {
     this.#fetch = o.fetch ?? ((url) => fetch(url));
     this.#url = o.descriptorUrl ?? DESCRIPTOR_URL;
+    this.#releases = o.releasesUrl ?? RELEASES_URL;
     this.#ttlMs = o.ttlMs ?? 60_000;
   }
 
@@ -396,7 +553,7 @@ export class PublicSource {
     if (this.#last && Date.now() - this.#at < this.#ttlMs) {
       return this.#last;
     }
-    this.#pending ??= loadNetwork(this.#fetch, this.#url)
+    this.#pending ??= loadNetwork(this.#fetch, this.#url, this.#releases)
       .then((n) => {
         this.#last = n;
         this.#at = Date.now();

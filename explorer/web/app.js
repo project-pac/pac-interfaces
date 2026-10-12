@@ -73,6 +73,7 @@ const crumb = (...parts) => h("div", { class: "crumb" }, parts.map((p, i) => [i 
 
 let network;
 let mode = { mode: "public", private: false };
+let meInfo;
 let mine;
 
 async function api(path) {
@@ -149,6 +150,34 @@ function activity(samples) {
   return box;
 }
 
+const appRelease = (v) => network?.app?.releases?.find((r) => r.version === v);
+const mb = (n) => (typeof n === "number" ? `${(n / 1e6).toFixed(1)} MB` : "–");
+const KINDS = { cli: "pac (CLI)", app: "Mac app", signature: "update signature", other: "file" };
+function contents(r) {
+  const cli = r.files.filter((f) => f.kind === "cli").length;
+  const app = r.files.some((f) => f.kind === "app");
+  return [cli ? `pac for ${cli} platform${cli === 1 ? "" : "s"}` : "", app ? "Mac app" : ""].filter(Boolean).join(" + ") || `${r.files.length} files`;
+}
+const newerThan = (a, b) => {
+  const [x, y] = [a, b].map((v) => String(v).split(".").map(Number));
+  for (let i = 0; i < 3; i++) if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) > (y[i] ?? 0);
+  return false;
+};
+
+/** The latest app release, and, on the local explorer, whether this machine's pac is behind it. */
+function releaseBanner() {
+  const app = network.app;
+  const r = app?.latest ? appRelease(app.latest) : undefined;
+  if (!r) return null;
+  const behind = meInfo?.version && newerThan(r.version, meInfo.version);
+  return h("a", { class: `release${behind ? " behind" : ""}`, href: `#/app/${r.version}` },
+    h("span", { class: "tag" }, "Latest release"),
+    h("b", {}, `PAC ${r.version}`),
+    h("span", {}, "released ", time(r.publishedAt)),
+    sig(r.sigValid, "signed with PAC's release key", "signature doesn't verify"),
+    behind ? h("span", { class: "nudge" }, `Your pac is ${meInfo.version}: run pac upgrade`) : h("span", { class: "muted" }, "install.sh, or pac upgrade"));
+}
+
 function quoteCell(q) {
   return [
     h("div", {}, [q.backend, q.platform].filter(Boolean).join(" · ") || "quote", h("span", { class: "muted small" }, ` · ${fmt(q.bytes)} bytes · ${fmt(q.events)} boot events${q.collateral ? " · collateral included" : ""}`)),
@@ -205,6 +234,7 @@ async function overview() {
     h("h1", {}, `${d.name} network`),
     h("p", { class: "lede" }, "Descriptor signed ", time(d.at), " by its signer ", sig(d.sigValid, "valid", "invalid"), " · read ", time(network.at)),
     network.problems.length ? h("div", { class: "warn" }, `Checks that failed: ${network.problems.join(", ")}`) : null,
+    releaseBanner(),
     h("div", { class: "hero" },
       h("div", { class: "height" }, h("div", { class: "label" }, "Vault height"), h("div", { class: "n" }, fmt(network.height)), h("div", { class: "sub" }, "accepted writes, every person's and every TEE's")),
       h("div", { class: "stats" },
@@ -280,9 +310,19 @@ function teePage(id) {
 
 function releasesPage() {
   const d = network.deployment;
+  const app = network.app ?? { releases: [] };
   return [
     h("h1", {}, "Releases"),
-    h("p", { class: "lede" }, "The code PAC's computer may run, each pinned by its measurement in the descriptor ", sig(d.sigValid, "signed", "unsigned"), " by ", hash(d.signer, 10), "."),
+    h("p", { class: "lede" }, "Three kinds, each checked here: the app people install, the code PAC's computer may run, and the PAC program it loads."),
+    ...section("The PAC app", "green",
+      h("p", { class: "small muted" }, "Every version's checksums are signed by the release key the pac CLI pins (", hash(app.key ?? "", 12), "). The CDN lists no versions, so each one it keeps is found and checked."),
+      table(["Version", "Released", "What's in it", "Checksums"], app.releases.map((r) => [
+        [h("a", { href: `#/app/${r.version}` }, r.version), r.latest ? [" ", h("span", { class: "badge live" }, "latest")] : null],
+        r.publishedAt ? [when(r.publishedAt), h("span", { class: "muted small" }, ` · ${ago(r.publishedAt)}`)] : "–",
+        contents(r),
+        sig(r.sigValid, "signed", "unsigned"),
+      ]), "No releases found.")),
+    ...section("PAC's computer", null, h("p", { class: "small muted" }, "The code PAC's computer may run, each pinned by its measurement in the descriptor ", sig(d.sigValid, "signed", "unsigned"), " by ", hash(d.signer, 10), ".")),
     table(["Version", "Code identity", "Status", "Platform", "Since", "Commit"], d.releases.map((r) => [
       h("a", { href: `#/release/${r.measurement}` }, r.version ?? short(r.measurement, 10)),
       h("span", { class: "mono" }, short(r.codeIdentity, 22)),
@@ -292,6 +332,33 @@ function releasesPage() {
       r.commit ? h("a", { href: `https://github.com/project-pac/pac-system/commit/${r.commit}`, class: "mono" }, short(r.commit, 8)) : "–",
     ])),
     ...section("The PAC program's bundles", "red", table(["Bundle", "Status", "Since"], d.pac.map((p) => [h("a", { href: `#/program/${p.sha256}`, class: "mono" }, short(p.sha256, 16)), state(p.status), time(p.at)]))),
+  ];
+}
+
+function appPage(v) {
+  const r = appRelease(v);
+  if (!r) return [h("h1", {}, `No PAC ${v}`), h("p", { class: "empty" }, "The CDN keeps no release by that version.")];
+  const base = "https://cdn.projectpac.net/releases";
+  return [
+    crumb(h("a", { href: "#/releases" }, "Releases"), `PAC ${r.version}`),
+    h("h1", {}, `PAC ${r.version} `, r.latest ? h("span", { class: "badge live" }, "latest") : null),
+    sheet([
+      ["Released", r.publishedAt ? [when(r.publishedAt), " · ", time(r.publishedAt)] : "–"],
+      ["What's in it", contents(r)],
+      ["SHA256SUMS", [hash(r.sumsSha256), copyBtn(r.sumsSha256)]],
+      ["Signature", [sig(r.sigValid, "signed by PAC's release key", "doesn't verify"), h("span", { class: "muted small" }, " the key pac pins to check its upgrades: "), hash(network.app.key, 16)]],
+      r.latest && ["latest.json", r.manifestMatches ? h("span", { class: "badge ok" }, "names exactly the signed checksums") : h("span", { class: "badge bad" }, "differs from the signed checksums")],
+      ["Get it", h("code", {}, r.latest ? "curl -fsSL https://cdn.projectpac.net/install.sh | sh   ·   or: pac upgrade" : "pac upgrade installs the latest")],
+      meInfo?.version && ["This machine", meInfo.version === r.version ? h("span", { class: "badge ok" }, "runs this version") : h("span", {}, `runs pac ${meInfo.version}`)],
+    ]),
+    ...section("Files", null, table(["Kind", "Platform", "File", "Size", "sha256"], r.files.map((f) => [
+      KINDS[f.kind] ?? f.kind,
+      f.platform,
+      h("span", { class: "mono" }, f.name),
+      h("td", { class: "num" }, mb(f.size)),
+      [hash(f.sha256, 16), copyBtn(f.sha256)],
+    ]))),
+    h("p", { class: "small muted" }, "Check a download yourself: ", h("code", {}, `curl -fsSLO ${base}/${r.version}/SHA256SUMS && shasum -a 256 -c SHA256SUMS --ignore-missing`)),
   ];
 }
 
@@ -461,6 +528,8 @@ async function searchPage(raw) {
     return [];
   }
   if (/^\d+$/.test(q) && network.posts.some((p) => p.index === Number(q))) hits.push([`Bulletin post #${q}`, `#/post/${q}`]);
+  const ver = q.replace(/^v/i, "");
+  if (appRelease(ver)) hits.push([`PAC app ${ver}`, `#/app/${ver}`]);
   if (/^[0-9a-f]{6,64}$/.test(lower)) {
     for (const t of network.tees) if (t.id.startsWith(lower)) hits.push([`TEE ${short(t.id, 12)}`, `#/tee/${t.id}`]);
     for (const p of network.profiles) if (p.id.startsWith(lower)) hits.push([`Person: ${p.name}`, `#/person/${p.id}`]);
@@ -486,6 +555,7 @@ const ROUTES = [
   [/^\/tee\/([0-9a-f]{64})$/, teePage, "#/tees"],
   [/^\/releases$/, releasesPage, "#/releases"],
   [/^\/release\/([0-9a-f]{64})$/, releasePage, "#/releases"],
+  [/^\/app\/(\d+\.\d+\.\d+)$/, appPage, "#/releases"],
   [/^\/programs$/, programsPage, "#/programs"],
   [/^\/program\/([0-9a-f]{64})$/, programPage, "#/programs"],
   [/^\/people$/, peoplePage, "#/people"],
@@ -539,8 +609,8 @@ async function boot() {
     return;
   }
   if (mode.private) {
-    const me = await api("/api/me").catch(() => undefined);
-    modeEl.replaceChildren(h("i"), `local · ${me?.name ?? "you"}`);
+    meInfo = await api("/api/me").catch(() => undefined);
+    modeEl.replaceChildren(h("i"), `local · ${meInfo?.name ?? "you"}${meInfo?.version ? ` · pac ${meInfo.version}` : ""}`);
     modeEl.className = "mode";
   } else {
     modeEl.replaceChildren(h("i"), mode.mode === "local" ? "local · open the printed link to see your sessions" : "public network");

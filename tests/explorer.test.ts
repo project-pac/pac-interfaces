@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { request } from "node:http";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { decodeObject, loadNetwork, PublicSource, type Fetch } from "../explorer/public.ts";
+import { decodeObject, loadApp, loadNetwork, PublicSource, type Fetch } from "../explorer/public.ts";
 import { startExplorer, WEB, type Explorer } from "../explorer/server.ts";
 import { jcs, sha256Hex, verifySig } from "../explorer/verify.ts";
 import { fakePac, question, S1, session } from "./scene.ts";
@@ -97,6 +97,60 @@ function network() {
   };
   return { fetch, signer, publisher, alice, t1, t2, bundle };
 }
+
+/** A CDN of app releases, signed with a key of the test's own: `bad` versions are signed by another. */
+function cdn(versions: string[], latest: string, bad: string[] = [], listed?: Record<string, { sha256: string; size: number }>) {
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  const other = generateKeyPairSync("ed25519").privateKey;
+  const spki = publicKey.export({ format: "der", type: "spki" }).toString("base64");
+  const base = `https://cdn.test/releases-${Math.random().toString(36).slice(2)}`;
+  const sums = (v: string) => ["darwin-arm64", "linux-x64"].map((p) => `${sha256Hex(`${v}-${p}`)}  pac-${v}-${p}.tar.gz`).join("\n") + "\n";
+  const fetch: Fetch = async (url) => {
+    const m = url.slice(base.length + 1).match(/^(\d+\.\d+\.\d+)\/(SHA256SUMS(?:\.sig)?)$/);
+    if (url === `${base}/latest.json`) {
+      return new Response(JSON.stringify({ version: latest, sums: `${latest}/SHA256SUMS`, sig: `${latest}/SHA256SUMS.sig`, files: listed ?? Object.fromEntries(["darwin-arm64", "linux-x64"].map((p) => [p, { path: `${latest}/pac-${latest}-${p}.tar.gz`, sha256: sha256Hex(`${latest}-${p}`), size: 1000 }])) }));
+    }
+    if (m && versions.includes(m[1]!)) {
+      const body = sums(m[1]!);
+      return m[2] === "SHA256SUMS" ? new Response(body, { headers: { "last-modified": "Mon, 12 Oct 2026 06:37:56 GMT" } }) : new Response(sign(null, Buffer.from(body), bad.includes(m[1]!) ? other : privateKey).toString("base64"));
+    }
+    return new Response("missing", { status: 404 });
+  };
+  return { fetch, base, spki };
+}
+
+describe("app releases", () => {
+  it("finds every version the CDN keeps, and checks each one's checksums against the release key", async () => {
+    const c = cdn(["0.1.0", "0.2.0", "0.2.1"], "0.2.1", ["0.2.0"]);
+    const app = await loadApp(c.fetch, c.base, c.spki);
+    expect(app.latest).toBe("0.2.1");
+    expect(app.releases.map((r) => [r.version, r.latest, r.sigValid])).toEqual([
+      ["0.2.1", true, true],
+      ["0.2.0", false, false],
+      ["0.1.0", false, true],
+    ]);
+    expect(app.problems).toEqual(["app_signature_0.2.0"]);
+    const top = app.releases[0]!;
+    expect(top.publishedAt).toBe("2026-10-12T06:37:56.000Z");
+    expect(top.files).toEqual([
+      { kind: "cli", platform: "darwin-arm64", name: "pac-0.2.1-darwin-arm64.tar.gz", sha256: sha256Hex("0.2.1-darwin-arm64"), size: 1000 },
+      { kind: "cli", platform: "linux-x64", name: "pac-0.2.1-linux-x64.tar.gz", sha256: sha256Hex("0.2.1-linux-x64"), size: 1000 },
+    ]);
+    expect(top.manifestMatches).toBe(true);
+  });
+
+  it("flags a latest.json that names other files than its signed checksums", async () => {
+    const c = cdn(["0.3.0"], "0.3.0", [], { "darwin-arm64": { sha256: "0".repeat(64), size: 1 }, "linux-x64": { sha256: sha256Hex("0.3.0-linux-x64"), size: 1 } });
+    const app = await loadApp(c.fetch, c.base, c.spki);
+    expect(app.releases[0]!.manifestMatches).toBe(false);
+    expect(app.problems).toContain("app_manifest_mismatch");
+  });
+
+  it("says so when there's no latest release to read", async () => {
+    const app = await loadApp(async () => new Response("no", { status: 404 }), "https://cdn.test/none", cdn([], "0.0.1").spki);
+    expect(app).toMatchObject({ releases: [], problems: ["app_latest_unreadable"] });
+  });
+});
 
 // ---- Signatures --------------------------------------------------------------
 

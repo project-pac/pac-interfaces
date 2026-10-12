@@ -123,6 +123,24 @@ h2.red { --c: var(--red); }
 .muted { color: var(--muted); }
 .small { font-size: 13px; }
 
+/* ---- The latest release ------------------------------------------------- */
+.release {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
+  margin: 14px 0 0;
+  padding: 10px 14px;
+  border: 1px solid var(--rule);
+  border-left: 4px solid var(--green);
+  color: var(--ink);
+  font-size: 14px;
+}
+.release:hover { background: var(--panel); text-decoration: none; color: var(--ink); }
+.release .tag { font-size: 11px; letter-spacing: 0.07em; text-transform: uppercase; color: var(--muted); }
+.release.behind { border-left-color: var(--red); }
+.release .nudge { color: var(--red); font-weight: 600; }
+
 /* ---- The height and the stat strip -------------------------------------- */
 .hero { display: grid; grid-template-columns: minmax(240px, 1.2fr) 3fr; gap: 0; border: 1px solid var(--rule); margin-top: 8px; }
 .height { padding: 22px 24px; border-right: 1px solid var(--rule); background: var(--panel); }
@@ -235,7 +253,7 @@ details.raw pre { font-family: var(--mono); font-size: 12px; background: var(--p
   .reveal > *:nth-child(4) { animation-delay: 120ms; }
   .reveal > *:nth-child(5) { animation-delay: 160ms; }
   .reveal > *:nth-child(n + 6) { animation-delay: 200ms; }
-  @keyframes settle { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+  @keyframes settle { from { opacity: 0.4; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 }
 
 @media (max-width: 520px) {
